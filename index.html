@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Microstock Adobe Helper Pro — AI Upscaler, Bezier Vectorizer & Vision SEO</title>
+  <meta name="description" content="Alat bantu kontributor Adobe Stock untuk gambar Generative AI: Multi-step Anti-Halo Upscaler (4MP-16MP), Smooth Bezier Vectorizer (.SVG & .EPS), Real Gemini Vision SEO Metadata, dan Direct XMP Injector." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="./css/style.css" rel="stylesheet" />
+</head>
+<body>
+
+  <!-- Top Navigation -->
+  <header class="app-navbar py-2 px-3 px-lg-4">
+    <div class="container-fluid max-w-1600 d-flex align-items-center justify-content-between gap-2">
+      <div class="d-flex align-items-center gap-2 min-w-0">
+        <div class="stats-icon bg-light-primary text-navy fw-bold shadow-sm">
+          <i class="bi bi-layers-half fs-5"></i>
+        </div>
+        <div class="min-w-0">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <h1 class="h6 mb-0 fw-bold text-navy text-break">Microstock Adobe Helper</h1>
+            <span class="badge bg-light-primary border border-primary-subtle fw-semibold">PRO • AI Contributor Edition</span>
+          </div>
+          <p class="mb-0 text-muted d-none d-sm-block" style="font-size: 0.78rem;">
+            Anti-Halo Upscaler (4MP–16MP) • Smooth Bezier Vector (.SVG/.EPS) • Real Gemini Vision XMP SEO
+          </p>
+        </div>
+      </div>
+
+      <div class="d-flex align-items-center gap-2 flex-nowrap">
+        <button type="button" id="btnOpenApiModal" class="btn btn-sm bg-light-warning border border-warning-subtle d-inline-flex align-items-center" title="Pengaturan API Key Gemini Vision">
+          <i class="bi bi-key-fill"></i>
+          <span id="apiKeyStatusBadge" class="d-none d-md-inline ms-1 fw-semibold">Set Gemini API Key</span>
+        </button>
+        <button type="button" id="btnOpenGuideModal" class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center" title="Panduan Anti-Reject Adobe Stock AI">
+          <i class="bi bi-shield-check"></i>
+          <span class="d-none d-md-inline ms-1">Panduan Anti-Reject</span>
+        </button>
+        <button type="button" id="btnOpenExportModal" class="btn btn-sm btn-brand d-inline-flex align-items-center shadow-sm" title="Export Semua ke ZIP + CSV + XMP">
+          <i class="bi bi-file-earmark-zip-fill"></i>
+          <span class="d-none d-md-inline ms-1">Export Paket (ZIP/CSV)</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="container-fluid py-4 px-3 px-lg-4" style="max-width: 1600px;">
+
+    <!-- API Key Alert Banner (Shown if no Gemini API Key set) -->
+    <div id="missingKeyAlert" class="alert bg-light-info border border-info-subtle d-flex align-items-start justify-content-between mb-4 rounded-3 shadow-sm d-none">
+      <div class="d-flex align-items-start">
+        <i class="bi bi-info-circle-fill me-3 fs-5 mt-1 flex-shrink-0" style="line-height: 1;"></i>
+        <div class="min-w-0 text-break">
+          <strong class="text-navy">Agar Metadata Sesuai 100% dengan Isi Gambar Visual:</strong>
+          <div class="small mt-1">
+            Aplikasi ini menganalisis piksel gambar secara langsung menggunakan <strong>Google Gemini 3.8 Flash Vision</strong> (tanpa menebak dari nama file dan tanpa <em>silent fallback</em> palsu). Silakan masukkan API Key gratis dari Google AI Studio.
+          </div>
+        </div>
+      </div>
+      <button type="button" class="btn btn-sm btn-brand ms-3 flex-shrink-0 d-inline-flex align-items-center" id="btnAlertOpenKey">
+        <i class="bi bi-key"></i>
+        <span class="ms-1">Masukkan API Key</span>
+      </button>
+    </div>
+
+    <div class="row g-4 align-items-start">
+      <!-- Left Sidebar: Upload & Engine Settings -->
+      <aside class="col-12 col-lg-4 col-xl-3">
+        <div class="d-flex flex-column gap-3">
+
+          <!-- Upload Card -->
+          <div class="pro-card p-3">
+            <div class="d-flex align-items-center justify-content-between pb-2 mb-3 border-bottom">
+              <div class="d-flex align-items-center gap-2">
+                <i class="bi bi-cloud-arrow-up-fill text-navy fs-5"></i>
+                <h2 class="h6 mb-0 fw-bold text-navy">Upload Gambar AI / Desain</h2>
+              </div>
+              <span id="queueCounterBadge" class="badge bg-light-primary font-monospace">0 / 100</span>
+            </div>
+
+            <div id="uploadDropzone" class="upload-dropzone mb-3">
+              <input type="file" id="fileInput" multiple accept="image/jpeg,image/png,image/webp" class="d-none" />
+              <div class="stats-icon bg-light-primary mx-auto mb-2">
+                <i class="bi bi-images fs-5"></i>
+              </div>
+              <div class="fw-semibold text-navy small">Klik atau Tarik & Lepas Gambar ke Sini</div>
+              <div class="text-muted mt-1" style="font-size: 0.78rem;">JPG, PNG, WEBP • Mendukung hasil Midjourney, Flux, Firefly, DALL-E</div>
+            </div>
+
+            <div class="d-flex align-items-center justify-content-between p-2 rounded-3 bg-light-primary border border-primary-subtle">
+              <span class="small fw-medium">Ingin tes fitur dulu?</span>
+              <button type="button" id="btnLoadSamples" class="btn btn-sm btn-white bg-white border shadow-sm d-inline-flex align-items-center" title="Muat 3 Gambar Sampel AI">
+                <i class="bi bi-magic text-primary"></i>
+                <span class="ms-1 small fw-semibold text-navy">Muat 3 Sampel AI</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Engine Configuration Tabs -->
+          <div class="pro-card p-3">
+            <ul class="nav nav-pills nav-fill gap-1 p-1 rounded-3 mb-3" style="background: #f1f5f9;" id="configTabs" role="tablist">
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active py-1 px-2 small fw-semibold" data-bs-toggle="pill" data-bs-target="#tabUpscale" type="button" role="tab">
+                  <i class="bi bi-arrows-angle-expand me-1"></i>Upscale
+                </button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link py-1 px-2 small fw-semibold" data-bs-toggle="pill" data-bs-target="#tabVector" type="button" role="tab">
+                  <i class="bi bi-bezier2 me-1"></i>Vector SVG
+                </button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link py-1 px-2 small fw-semibold" data-bs-toggle="pill" data-bs-target="#tabVision" type="button" role="tab">
+                  <i class="bi bi-stars me-1"></i>Meta AI
+                </button>
+              </li>
+            </ul>
+
+            <div class="tab-content">
+              <!-- TAB 1: UPSCALE SETTINGS -->
+              <div class="tab-pane fade show active" id="tabUpscale" role="tabpanel">
+                <div class="mb-3">
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="small fw-bold text-navy">Target Resolusi Adobe Stock</label>
+                    <span class="badge bg-light-success">Min 4.0 MP</span>
+                  </div>
+                  <div class="row g-2" id="scalePresetGroup">
+                    <div class="col-6">
+                      <button type="button" class="preset-btn" data-scale="4mp">
+                        <div class="d-flex justify-content-between align-items-center">
+                          <span class="fw-bold text-navy small">4.4 MP</span>
+                          <span class="badge bg-light-info">Standar</span>
+                        </div>
+                        <div class="text-muted" style="font-size: 0.75rem;">Lolos batas 4MP</div>
+                      </button>
+                    </div>
+                    <div class="col-6">
+                      <button type="button" class="preset-btn active" data-scale="8mp">
+                        <div class="d-flex justify-content-between align-items-center">
+                          <span class="fw-bold text-navy small">8.6 MP (4K)</span>
+                          <span class="badge bg-light-success">Ideal AI</span>
+                        </div>
+                        <div class="text-muted" style="font-size: 0.75rem;">Rekomendasi Kurator</div>
+                      </button>
+                    </div>
+                    <div class="col-6">
+                      <button type="button" class="preset-btn" data-scale="12mp">
+                        <div class="d-flex justify-content-between align-items-center">
+                          <span class="fw-bold text-navy small">12.5 MP</span>
+                          <span class="badge bg-light-primary">6K Crisp</span>
+                        </div>
+                        <div class="text-muted" style="font-size: 0.75rem;">Komersial Cetak</div>
+                      </button>
+                    </div>
+                    <div class="col-6">
+                      <button type="button" class="preset-btn" data-scale="16mp">
+                        <div class="d-flex justify-content-between align-items-center">
+                          <span class="fw-bold text-navy small">16.5 MP</span>
+                          <span class="badge bg-light-warning">Max Detail</span>
+                        </div>
+                        <div class="text-muted" style="font-size: 0.75rem;">Resolusi Ekstra</div>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mb-3">
+                  <label class="small fw-bold text-navy d-block mb-1">Mode Filter Restorasi (Anti-Halo)</label>
+                  <select id="selectUpscaleProfile" class="form-select form-select-sm">
+                    <option value="ai-photorealistic" selected>AI Photorealistic / 3D (Natural & Anti-Halo)</option>
+                    <option value="ai-illustration">AI Illustration / Flat Art (Haluskan Noise & Tepi Tegas)</option>
+                    <option value="ultra-sharp">Ultra-Sharp Texture (Detail Arsitektur / Produk)</option>
+                  </select>
+                  <div class="text-muted mt-1" style="font-size: 0.75rem;">
+                    Menggunakan <em>Luminance Unsharp Mask + Clamping</em> agar bebas <em>ringing halo</em>.
+                  </div>
+                </div>
+
+                <div class="mb-3">
+                  <div class="d-flex justify-content-between small mb-1">
+                    <span class="fw-semibold text-navy">Intensitas Ketajaman</span>
+                    <span id="labelSharpnessVal" class="font-monospace fw-bold text-navy">75%</span>
+                  </div>
+                  <input type="range" id="rangeSharpness" class="form-range" min="30" max="100" step="5" value="75" />
+                </div>
+
+                <div class="row g-2 align-items-center pt-2 border-top">
+                  <div class="col-6">
+                    <label class="small fw-bold text-navy d-block mb-1">Format Output</label>
+                    <select id="selectOutputFormat" class="form-select form-select-sm">
+                      <option value="image/jpeg" selected>JPG (sRGB 95%)</option>
+                      <option value="image/png">PNG (Lossless)</option>
+                    </select>
+                  </div>
+                  <div class="col-6">
+                    <label class="small fw-bold text-navy d-block mb-1">Kualitas JPG</label>
+                    <select id="selectJpegQuality" class="form-select form-select-sm">
+                      <option value="92">92% (Hemat Ukuran)</option>
+                      <option value="95" selected>95% (Standar Adobe)</option>
+                      <option value="98">98% (Maksimum)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <!-- TAB 2: VECTORIZER & BACKGROUND CUTOUT -->
+              <div class="tab-pane fade" id="tabVector" role="tabpanel">
+                <div class="p-2 rounded-3 bg-light-info border border-info-subtle mb-3 small">
+                  <i class="bi bi-lightbulb-fill me-1"></i>
+                  <strong>Tips Adobe Stock:</strong> Gunakan fitur Vector (.SVG/.EPS) untuk gambar <strong>Flat Illustration, Logo, Icon, Sticker, atau Line Art</strong>. Untuk foto AI realistis, gunakan Upscale JPG.
+                </div>
+
+                <div class="mb-3">
+                  <div class="d-flex justify-content-between small mb-1">
+                    <span class="fw-bold text-navy">Jumlah Palet Warna Vector</span>
+                    <span id="labelVectorColors" class="font-monospace fw-bold text-navy">18 Warna</span>
+                  </div>
+                  <input type="range" id="rangeVectorColors" class="form-range" min="4" max="32" step="2" value="18" />
+                  <div class="d-flex justify-content-between text-muted" style="font-size: 0.75rem;">
+                    <span>4 (Logo/Siluet)</span>
+                    <span>18 (Ilustrasi)</span>
+                    <span>32 (Detail)</span>
+                  </div>
+                </div>
+
+                <div class="mb-3">
+                  <div class="d-flex justify-content-between small mb-1">
+                    <span class="fw-bold text-navy">Pembersih Bintik Noise (Despeckle)</span>
+                    <span id="labelSpeckleArea" class="font-monospace fw-bold text-navy">12 px</span>
+                  </div>
+                  <input type="range" id="rangeSpeckleArea" class="form-range" min="4" max="40" step="2" value="12" />
+                </div>
+
+                <div class="pt-2 border-top">
+                  <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="checkAutoIsolateBg" />
+                    <label class="form-check-label small fw-bold text-navy" for="checkAutoIsolateBg">
+                      Hapus Background Otomatis (Cutout)
+                    </label>
+                  </div>
+                  <div id="bgToleranceBox" class="ps-2 d-none">
+                    <div class="d-flex justify-content-between small mb-1">
+                      <span class="text-muted">Toleransi Warna Tepi</span>
+                      <span id="labelBgTolerance" class="font-monospace fw-semibold">24%</span>
+                    </div>
+                    <input type="range" id="rangeBgTolerance" class="form-range" min="8" max="55" step="2" value="24" />
+                    <select id="selectBgMode" class="form-select form-select-sm mt-1">
+                      <option value="transparent" selected>PNG Transparan (Alpha Cutout)</option>
+                      <option value="white">JPG Background Putih Bersih (#FFFFFF)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <!-- TAB 3: GEMINI VISION METADATA SEO -->
+              <div class="tab-pane fade" id="tabVision" role="tabpanel">
+                <div class="mb-3">
+                  <div class="d-flex justify-content-between small mb-1">
+                    <span class="fw-bold text-navy">Target Jumlah Keywords</span>
+                    <span id="labelKeywordCount" class="font-monospace fw-bold text-navy">42 tags</span>
+                  </div>
+                  <input type="range" id="rangeKeywordCount" class="form-range" min="25" max="49" step="1" value="42" />
+                  <div class="d-flex justify-content-between text-muted" style="font-size: 0.75rem;">
+                    <span>25 Min</span>
+                    <span class="text-navy fw-semibold">40–45 Ideal Adobe</span>
+                    <span>49 Max</span>
+                  </div>
+                </div>
+
+                <div class="mb-3">
+                  <label class="small fw-bold text-navy d-block mb-1">Gaya Aset AI Anda</label>
+                  <select id="selectAssetStyle" class="form-select form-select-sm">
+                    <option value="ai-auto" selected>Deteksi Visual Otomatis oleh Gemini</option>
+                    <option value="ai-photo">AI Photorealistic / 3D Commercial Render</option>
+                    <option value="ai-illustration">AI Digital Illustration / Concept Art</option>
+                    <option value="ai-vector">AI Flat Vector / Clipart / Sticker / Icon</option>
+                  </select>
+                </div>
+
+                <div class="mb-2">
+                  <label class="small fw-bold text-navy d-block mb-1">Konteks / Tema Tambahan (Opsional)</label>
+                  <input type="text" id="inputFocusTheme" class="form-control form-control-sm" placeholder="Contoh: Ramadan festive, minimalist isometric..." />
+                  <div class="text-muted mt-1" style="font-size: 0.75rem;">
+                    Membantu Gemini menekankan niche komersial tertentu pada judul & 10 keyword pertama.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </aside>
+
+      <!-- Right Workspace: Stats, Batch Actions & Asset Grid -->
+      <section class="col-12 col-lg-8 col-xl-9">
+        <div class="d-flex flex-column gap-3">
+
+          <!-- Top KPI Summary Row -->
+          <div class="row g-3">
+            <div class="col-6 col-md-3">
+              <div class="detail-info-card shadow-sm">
+                <span class="detail-label"><i class="bi bi-collection text-primary"></i> Total Antrean</span>
+                <div class="detail-value"><span id="statTotalCount">0</span> <small class="text-muted fw-normal fs-6">aset</small></div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="detail-info-card shadow-sm">
+                <span class="detail-label"><i class="bi bi-check2-circle text-success"></i> Siap Upload (QC Lolos)</span>
+                <div class="detail-value text-success"><span id="statReadyCount">0</span> <small class="text-muted fw-normal fs-6">aset</small></div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="detail-info-card shadow-sm">
+                <span class="detail-label"><i class="bi bi-exclamation-triangle text-danger"></i> Butuh Upscale (&lt;4MP)</span>
+                <div class="detail-value text-danger"><span id="statNeedUpscaleCount">0</span> <small class="text-muted fw-normal fs-6">aset</small></div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="detail-info-card shadow-sm">
+                <span class="detail-label"><i class="bi bi-bezier2 text-info"></i> Terkonversi Vector</span>
+                <div class="detail-value"><span id="statVectorCount">0</span> <small class="text-muted fw-normal fs-6">.SVG/.EPS</small></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Batch Action Toolbar -->
+          <div class="pro-card p-3">
+            <div class="d-flex flex-column flex-md-row align-items-stretch align-items-md-center justify-content-between gap-2 pb-3 mb-3 border-bottom">
+              <div class="d-flex flex-wrap align-items-center gap-2">
+                <button type="button" id="btnBatchProcessAll" class="btn btn-sm btn-brand d-inline-flex align-items-center px-3 py-2 shadow-sm" title="Jalankan Upscale + Gemini Vision Metadata Sekaligus">
+                  <i class="bi bi-play-circle-fill"></i>
+                  <span class="ms-1">Proses Semua (Upscale + Vision AI)</span>
+                </button>
+                <button type="button" id="btnBatchUpscaleOnly" class="btn btn-sm btn-outline-primary d-inline-flex align-items-center py-2" title="Upscale Semua Gambar ke Standar 4MP-16MP">
+                  <i class="bi bi-arrows-angle-expand"></i>
+                  <span class="d-none d-sm-inline ms-1">Batch Upscale</span>
+                </button>
+                <button type="button" id="btnBatchMetaOnly" class="btn btn-sm btn-outline-primary d-inline-flex align-items-center py-2" title="Generate Metadata dengan Gemini Vision AI">
+                  <i class="bi bi-stars"></i>
+                  <span class="d-none d-sm-inline ms-1">Batch Vision AI Meta</span>
+                </button>
+                <button type="button" id="btnBatchVectorize" class="btn btn-sm btn-outline-dark d-inline-flex align-items-center py-2" title="Konversi Batch ke Vector .SVG & .EPS">
+                  <i class="bi bi-bezier2"></i>
+                  <span class="d-none d-sm-inline ms-1">Batch Vector (.SVG/.EPS)</span>
+                </button>
+              </div>
+
+              <div class="d-flex align-items-center gap-2 justify-content-end">
+                <button type="button" id="btnClearQueue" class="btn btn-sm btn-outline-danger d-inline-flex align-items-center py-2" title="Bersihkan Semua Antrean">
+                  <i class="bi bi-trash3"></i>
+                  <span class="d-none d-md-inline ms-1">Bersihkan</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Active Batch Progress Bar -->
+            <div id="batchProgressBox" class="p-3 rounded-3 bg-light-primary border border-primary-subtle mb-3 d-none">
+              <div class="d-flex justify-content-between align-items-center small fw-semibold mb-1">
+                <span id="batchProgressLabel" class="text-navy d-flex align-items-center gap-2">
+                  <span class="spinner-border spinner-border-sm text-primary" role="status"></span>
+                  <span>Memproses antrean...</span>
+                </span>
+                <span id="batchProgressCounter" class="font-monospace text-navy">0 / 0 (0%)</span>
+              </div>
+              <div class="progress" style="height: 8px;">
+                <div id="batchProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary" style="width: 0%;"></div>
+              </div>
+            </div>
+
+            <!-- Filter Pills & Search -->
+            <div class="d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center justify-content-between gap-2">
+              <div class="d-flex flex-wrap gap-1" id="filterPillsGroup">
+                <button type="button" class="btn btn-sm btn-dark active" data-filter="all">Semua</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-filter="ready">Siap Upload</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-filter="need_upscale">&lt; 4MP</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-filter="vector">Vector (.SVG/.EPS)</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-filter="issues">Perlu Cek QC</button>
+              </div>
+              <div class="input-group input-group-sm" style="max-width: 280px;">
+                <span class="input-group-text bg-white"><i class="bi bi-search text-muted"></i></span>
+                <input type="text" id="inputSearchFilter" class="form-control" placeholder="Cari judul atau keyword..." />
+              </div>
+            </div>
+          </div>
+
+          <!-- Empty State -->
+          <div id="emptyQueueState" class="pro-card p-5 text-center">
+            <div class="stats-icon bg-light-primary mx-auto mb-3" style="width: 56px; height: 56px;">
+              <i class="bi bi-cloud-upload fs-3 text-primary"></i>
+            </div>
+            <h3 class="h6 fw-bold text-navy mb-1">Belum Ada Gambar di Antrean</h3>
+            <p class="text-muted small mx-auto mb-3" style="max-width: 460px;">
+              Unggah gambar hasil AI (Midjourney, Flux, Firefly, DALL-E) atau klik tombol di bawah untuk menguji <strong>Upscale Anti-Halo</strong>, <strong>Konversi Vector .SVG/.EPS</strong>, dan <strong>Gemini Vision Metadata SEO</strong>.
+            </p>
+            <button type="button" id="btnEmptyLoadSamples" class="btn btn-sm btn-brand px-3 py-2 d-inline-flex align-items-center shadow-sm">
+              <i class="bi bi-magic me-2"></i>Muat 3 Gambar Sampel AI Sekarang
+            </button>
+          </div>
+
+          <!-- Assets Grid Container -->
+          <div id="assetsGrid" class="row g-3 d-none"></div>
+
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- MODAL 1: INSPECT, COMPARE & EDIT METADATA -->
+  <div class="modal fade text-start text-wrap" id="inspectModal" tabindex="-1" aria-hidden="true" style="white-space: normal;">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
+        <div class="modal-header bg-light-primary border-bottom py-3 px-4">
+          <div class="min-w-0 pe-2">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <h5 class="modal-title fw-bold text-navy mb-0 text-break" id="modalAssetFilename">filename.jpg</h5>
+              <span id="modalResBadge" class="badge bg-light-success font-monospace">8.60 MP</span>
+              <span id="modalQcScoreBadge" class="badge bg-light-primary">Skor QC: 100/100</span>
+            </div>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+
+        <div class="modal-body p-4">
+          <div class="row g-4">
+            <!-- Left Column: Visual Comparison Slider & Actions -->
+            <div class="col-12 col-lg-6">
+              <div class="d-flex align-items-center justify-content-between mb-2">
+                <div class="btn-group btn-group-sm" role="group">
+                  <button type="button" id="btnViewRasterMode" class="btn btn-dark active">Perbandingan Upscale</button>
+                  <button type="button" id="btnViewVectorMode" class="btn btn-outline-dark">Preview Vector (.SVG)</button>
+                </div>
+                <div class="btn-group btn-group-sm" role="group" id="zoomBtnGroup">
+                  <button type="button" class="btn btn-outline-secondary active" data-zoom="1">1x</button>
+                  <button type="button" class="btn btn-outline-secondary" data-zoom="2">2x</button>
+                  <button type="button" class="btn btn-outline-secondary" data-zoom="3.5">3.5x</button>
+                </div>
+              </div>
+
+              <!-- Interactive Split Slider -->
+              <div id="compareStage" class="compare-stage mb-3">
+                <div class="compare-layer">
+                  <img id="compareAfterImg" src="" alt="Sesudah (Upscaled / Vector)" />
+                </div>
+                <div id="compareClip" class="compare-clip" style="width: 50%;">
+                  <div class="compare-layer" id="compareBeforeInner">
+                    <img id="compareBeforeImg" src="" alt="Sebelum (Original)" style="image-rendering: pixelated;" />
+                  </div>
+                </div>
+                <span class="badge bg-dark bg-opacity-75 position-absolute top-0 start-0 m-2 font-monospace" id="labelBeforeDim">Sebelum</span>
+                <span class="badge bg-primary position-absolute top-0 end-0 m-2 font-monospace" id="labelAfterDim">Sesudah</span>
+              </div>
+
+              <!-- Single Item Action Buttons -->
+              <div class="row g-2 mb-3">
+                <div class="col-6">
+                  <button type="button" id="btnModalUpscale" class="btn btn-sm btn-outline-primary w-100 py-2 d-inline-flex align-items-center justify-content-center">
+                    <i class="bi bi-arrows-angle-expand me-1"></i>Upscale Resolusi
+                  </button>
+                </div>
+                <div class="col-6">
+                  <button type="button" id="btnModalGenerateMeta" class="btn btn-sm btn-brand w-100 py-2 d-inline-flex align-items-center justify-content-center">
+                    <i class="bi bi-stars me-1"></i>Analisis Gemini Vision
+                  </button>
+                </div>
+                <div class="col-6">
+                  <button type="button" id="btnModalIsolateBg" class="btn btn-sm btn-outline-secondary w-100 py-2 d-inline-flex align-items-center justify-content-center">
+                    <i class="bi bi-scissors me-1"></i>Hapus Background
+                  </button>
+                </div>
+                <div class="col-6">
+                  <button type="button" id="btnModalVectorize" class="btn btn-sm btn-outline-dark w-100 py-2 d-inline-flex align-items-center justify-content-center">
+                    <i class="bi bi-bezier2 me-1"></i>Ubah Jadi .SVG & .EPS
+                  </button>
+                </div>
+              </div>
+
+              <!-- Vector Download Box (Visible when vectorized) -->
+              <div id="modalVectorBox" class="p-3 rounded-3 bg-light-info border border-info-subtle mb-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <strong class="small text-navy"><i class="bi bi-bezier2 me-1"></i>File Vector Bezier Siap Diunduh</strong>
+                  <span id="modalVectorStats" class="badge bg-white text-navy border font-monospace">0 kurva</span>
+                </div>
+                <div id="modalVectorAdvisor" class="small mb-2"></div>
+                <div class="d-flex gap-2">
+                  <button type="button" id="btnDownloadSvg" class="btn btn-sm btn-dark flex-fill d-inline-flex align-items-center justify-content-center">
+                    <i class="bi bi-download me-1"></i>Download .SVG
+                  </button>
+                  <button type="button" id="btnDownloadEps" class="btn btn-sm btn-outline-dark bg-white flex-fill d-inline-flex align-items-center justify-content-center">
+                    <i class="bi bi-download me-1"></i>Download .EPS (Illustrator)
+                  </button>
+                </div>
+              </div>
+
+              <!-- Adobe Stock Quality Audit Box -->
+              <div class="p-3 rounded-3 border bg-white">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <strong class="small text-navy"><i class="bi bi-shield-check text-success me-1"></i>Audit Kurasi Adobe Stock</strong>
+                  <span id="modalIssueCount" class="badge bg-light-success">Lolos Audit</span>
+                </div>
+                <div id="modalAuditList" class="d-flex flex-column gap-2 small"></div>
+              </div>
+            </div>
+
+            <!-- Right Column: Stacked Metadata Form -->
+            <div class="col-12 col-lg-6">
+              <div class="d-flex flex-column gap-3">
+
+                <div>
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="small fw-bold text-navy">Title (Judul Bahasa Inggris Komersial)</label>
+                    <span id="modalTitleCharCount" class="font-monospace small text-muted">0 / 70 karakter (Ideal: 50–70)</span>
+                  </div>
+                  <input type="text" id="modalInputTitle" class="form-control form-control-sm" placeholder="Judul komersial bahasa Inggris (tanpa merek & tanpa kata 4K/DSLR)..." />
+                </div>
+
+                <div>
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="small fw-bold text-navy">Description / Caption</label>
+                    <span id="modalDescCharCount" class="font-monospace small text-muted">0 / 200</span>
+                  </div>
+                  <textarea id="modalInputDesc" rows="2" class="form-control form-control-sm" placeholder="Deskripsi visual aset untuk agensi microstock..."></textarea>
+                </div>
+
+                <div class="row g-2">
+                  <div class="col-12 col-sm-6">
+                    <label class="small fw-bold text-navy d-block mb-1">Kategori Adobe Stock</label>
+                    <select id="modalSelectCategory" class="form-select form-select-sm"></select>
+                  </div>
+                  <div class="col-12 col-sm-6">
+                    <label class="small fw-bold text-navy d-block mb-1">Status Subjek AI</label>
+                    <div class="form-check mt-2">
+                      <input class="form-check-input" type="checkbox" id="modalCheckFictional" />
+                      <label class="form-check-label small" for="modalCheckFictional">
+                        Subjek Manusia / Properti Fiktif AI
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Keywords Section -->
+                <div>
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <div>
+                      <label class="small fw-bold text-navy mb-0">Keywords (Urut Prioritas #1–#10 Terpenting)</label>
+                      <span id="modalKwCountBadge" class="badge bg-light-primary font-monospace ms-1">0 / 49</span>
+                    </div>
+                    <div class="d-flex gap-1">
+                      <button type="button" id="btnCopyKeywords" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 0.78rem;">
+                        <i class="bi bi-clipboard me-1"></i>Copy Semua
+                      </button>
+                      <button type="button" id="btnScrubKeywords" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.78rem;" title="Bersihkan duplikat & kata terlarang">
+                        <i class="bi bi-funnel me-1"></i>Sanitize
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="input-group input-group-sm mb-2">
+                    <input type="text" id="modalInputAddKw" class="form-control" placeholder="Tambah keyword (pisahkan dengan koma lalu tekan Enter)..." />
+                    <button type="button" id="btnModalAddKw" class="btn btn-outline-primary">Tambah</button>
+                  </div>
+
+                  <div class="small text-muted mb-1" style="font-size: 0.75rem;">
+                    <span class="badge bg-light-primary border border-primary-subtle me-1">#1 – #10</span>
+                    Sepuluh keyword pertama memiliki bobot tertinggi di mesin pencari Adobe Stock.
+                  </div>
+
+                  <div id="modalKeywordsContainer" class="p-3 rounded-3 border bg-light d-flex flex-wrap gap-1 overflow-auto" style="max-height: 210px;"></div>
+                </div>
+
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between">
+          <div class="form-check mb-0">
+            <input class="form-check-input" type="checkbox" id="modalCheckEmbedXmp" checked />
+            <label class="form-check-label small fw-semibold text-navy" for="modalCheckEmbedXmp">
+              Suntikkan Metadata Adobe XMP/IPTC Langsung ke File (Auto-Fill saat Upload)
+            </label>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Tutup</button>
+            <button type="button" id="btnModalDownloadAsset" class="btn btn-sm btn-brand px-3 d-inline-flex align-items-center">
+              <i class="bi bi-download me-1"></i>Simpan & Download File Ini
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: GEMINI API KEY CONFIGURATION -->
+  <div class="modal fade text-start text-wrap" id="apiKeyModal" tabindex="-1" aria-hidden="true" style="white-space: normal;">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content border-0 shadow-lg rounded-4">
+        <div class="modal-header bg-light-warning border-bottom py-3 px-4">
+          <h5 class="modal-title fw-bold text-navy mb-0">
+            <i class="bi bi-key-fill me-2"></i>Pengaturan API Key Gemini Vision
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body p-4">
+          <div class="alert bg-light-info border border-info-subtle small d-flex align-items-start mb-3">
+            <i class="bi bi-shield-lock-fill me-2 fs-5 mt-1 flex-shrink-0" style="line-height: 1;"></i>
+            <div>
+              <strong>100% Aman di Browser Anda:</strong> API Key hanya disimpan di <code>localStorage</code> browser komputer Anda sendiri dan dikirim langsung ke server resmi Google Gemini (<code>generativelanguage.googleapis.com</code>).
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <label class="small fw-bold text-navy">Google AI Studio API Key (Bisa lebih dari 1 untuk rotasi)</label>
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" class="small fw-semibold text-decoration-none">
+                Ambil API Key Gratis <i class="bi bi-box-arrow-up-right"></i>
+              </a>
+            </div>
+            <textarea id="inputGeminiKeys" rows="3" class="form-control form-control-sm font-monospace" placeholder="AIzaSy... (Pisahkan dengan baris baru jika menggunakan beberapa API Key)"></textarea>
+          </div>
+
+          <div class="mb-3">
+            <label class="small fw-bold text-navy d-block mb-1">Model Multimodal Utama</label>
+            <select id="selectGeminiModel" class="form-select form-select-sm">
+              <option value="gemini-3.8-flash" selected>Gemini 3.8 Flash (Terbaru — Paling Cepat & Akurat untuk Vision SEO)</option>
+              <option value="gemini-3.8-pro">Gemini 3.8 Pro (Analisis Visual Mendalam)</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (Khusus API Key Lama / Legacy)</option>
+            </select>
+          </div>
+
+          <div id="apiTestResultBox" class="small d-none"></div>
+        </div>
+        <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between">
+          <button type="button" id="btnTestApiKey" class="btn btn-sm btn-outline-primary d-inline-flex align-items-center">
+            <i class="bi bi-lightning-charge me-1"></i>Tes Koneksi API
+          </button>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Batal</button>
+            <button type="button" id="btnSaveApiKey" class="btn btn-sm btn-brand px-3">Simpan API Key</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: BATCH EXPORT (ZIP + CSV + XMP) -->
+  <div class="modal fade text-start text-wrap" id="exportModal" tabindex="-1" aria-hidden="true" style="white-space: normal;">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content border-0 shadow-lg rounded-4">
+        <div class="modal-header bg-light-primary border-bottom py-3 px-4">
+          <h5 class="modal-title fw-bold text-navy mb-0">
+            <i class="bi bi-file-earmark-zip-fill me-2"></i>Export Paket Microstock (ZIP / CSV)
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body p-4">
+          <div class="mb-3">
+            <label class="small fw-bold text-navy d-block mb-2">Format Agensi Tujuan</label>
+            <div class="row g-2" id="exportAgencyGroup">
+              <div class="col-4">
+                <button type="button" class="preset-btn active text-center" data-agency="adobe">
+                  <div class="fw-bold text-navy small">Adobe Stock</div>
+                  <div class="text-muted" style="font-size: 0.72rem;">XMP + CSV Resmi</div>
+                </button>
+              </div>
+              <div class="col-4">
+                <button type="button" class="preset-btn text-center" data-agency="shutterstock">
+                  <div class="fw-bold text-navy small">Shutterstock</div>
+                  <div class="text-muted" style="font-size: 0.72rem;">XMP + CSV</div>
+                </button>
+              </div>
+              <div class="col-4">
+                <button type="button" class="preset-btn text-center" data-agency="freepik">
+                  <div class="fw-bold text-navy small">Freepik</div>
+                  <div class="text-muted" style="font-size: 0.72rem;">XMP + CSV</div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-3 rounded-3 border bg-light d-flex flex-column gap-2 mb-3">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="exportCheckXmp" checked />
+              <label class="form-check-label small fw-bold text-navy" for="exportCheckXmp">
+                Tanamkan Metadata XMP/IPTC Langsung ke Setiap File JPG & PNG
+              </label>
+              <div class="text-muted" style="font-size: 0.75rem;">
+                Saat di-upload ke portal Adobe Stock Contributor, kolom Title & 49 Keywords otomatis terisi.
+              </div>
+            </div>
+            <div class="form-check border-top pt-2">
+              <input class="form-check-input" type="checkbox" id="exportCheckVectors" checked />
+              <label class="form-check-label small fw-bold text-navy" for="exportCheckVectors">
+                Sertakan File Vector (.SVG & .EPS) jika sudah dikonversi
+              </label>
+            </div>
+            <div class="form-check border-top pt-2">
+              <input class="form-check-input" type="checkbox" id="exportCheckCsv" checked />
+              <label class="form-check-label small fw-bold text-navy" for="exportCheckCsv">
+                Sertakan Spreadsheet Metadata (.CSV) di dalam ZIP
+              </label>
+            </div>
+          </div>
+
+          <div id="zipBuildProgressBox" class="d-none">
+            <div class="d-flex justify-content-between small fw-semibold mb-1">
+              <span>Membuat arsip ZIP & menyuntikkan XMP...</span>
+              <span id="zipBuildPercent" class="font-monospace">0%</span>
+            </div>
+            <div class="progress" style="height: 8px;">
+              <div id="zipBuildBar" class="progress-bar bg-primary" style="width: 0%;"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between">
+          <button type="button" id="btnExportCsvOnly" class="btn btn-sm btn-outline-success d-inline-flex align-items-center">
+            <i class="bi bi-filetype-csv me-1"></i>Download CSV Saja
+          </button>
+          <button type="button" id="btnExportFullZip" class="btn btn-sm btn-brand px-3 d-inline-flex align-items-center">
+            <i class="bi bi-file-earmark-zip me-1"></i>Download Semua (.ZIP)
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 4: ADOBE STOCK AI CONTRIBUTOR GUIDE -->
+  <div class="modal fade text-start text-wrap" id="guideModal" tabindex="-1" aria-hidden="true" style="white-space: normal;">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content border-0 shadow-lg rounded-4">
+        <div class="modal-header bg-light-success border-bottom py-3 px-4">
+          <h5 class="modal-title fw-bold text-navy mb-0">
+            <i class="bi bi-shield-check me-2"></i>Panduan Lolos Kurasi Adobe Stock (Khusus Generative AI)
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body p-4 small">
+          <div class="d-flex flex-column gap-3">
+            <div class="p-3 rounded-3 bg-light-primary border border-primary-subtle">
+              <h6 class="fw-bold text-navy mb-1">1. Kapan Harus Upload JPG (Upscale) vs Vector (.SVG / .EPS)?</h6>
+              <ul class="mb-0 ps-3">
+                <li><strong>Gambar AI Fotorealistis / 3D Render / Lukisan Gradasi Halus:</strong> Gunakan fitur <strong>Upscale ke JPG (8.6 MP – 16.5 MP)</strong> dengan mode <em>AI Photorealistic</em>. <strong>Jangan</strong> diubah ke Vector SVG/EPS karena kurator Adobe Stock akan menolak hasil <em>auto-trace</em> dari foto realistis.</li>
+                <li><strong>Gambar AI Flat Illustration / Logo / Icon / Sticker / Siluet:</strong> Gunakan fitur <strong>Ubah Jadi .SVG & .EPS</strong>. Aplikasi ini menggunakan <em>Smooth Bezier Curve Tracing</em> + <em>Despeckle</em> sehingga kurva yang dihasilkan halus, bukan kotak-kotak piksel kasar.</li>
+              </ul>
+            </div>
+
+            <div class="p-3 rounded-3 bg-light-warning border border-warning-subtle">
+              <h6 class="fw-bold text-navy mb-1">2. Aturan Wajib Metadata Generative AI di Adobe Stock</h6>
+              <ul class="mb-0 ps-3">
+                <li><strong>10 Keyword Pertama adalah Kunci:</strong> Mesin pencari Adobe Stock memberi bobot terbesar pada 10 kata kunci pertama. Pastikan kata-kata di Judul ada di 10 keyword teratas (sudah diotomatisasi oleh aplikasi ini).</li>
+                <li><strong>Bebas Nama Kamera & Istilah Teknis:</strong> Jangan pernah menulis <code>4K, 8K, DSLR, 85mm, Photorealistic, Midjourney, Flux, Wallpaper</code>. Aplikasi ini memiliki <em>Auto-Sanitizer</em> yang menghapus kata-kata tersebut secara otomatis.</li>
+                <li><strong>Centang "Created using generative AI tools":</strong> Saat berada di halaman submit Adobe Stock Contributor, wajib mencentang kotak Generative AI (dan centang <em>"People and property are fictional"</em> jika gambar menampilkan figur manusia).</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer bg-light border-top py-2 px-4">
+          <button type="button" class="btn btn-sm btn-brand px-4" data-bs-dismiss="modal">Mengerti</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;"></div>
+
+  <!-- External Libraries (Bootstrap 5 + JSZip) -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
+

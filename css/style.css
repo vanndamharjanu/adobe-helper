@@ -1,0 +1,300 @@
+:root {
+  --navy-primary: #25396f;
+  --navy-dark: #1a2952;
+  --brand-accent: #435ebe;
+  --brand-accent-hover: #364b98;
+  --adobe-red: #d92d20;
+  --surface-bg: #f4f7fb;
+  --card-bg: #ffffff;
+  --border-subtle: #e2e8f0;
+  --text-main: #25396f;
+  --text-body: #475569;
+  --text-muted: #64748b;
+
+  /* Soft Tints */
+  --soft-primary-bg: #eef2ff;
+  --soft-primary-text: #3730a3;
+  --soft-success-bg: #ecfdf5;
+  --soft-success-text: #065f46;
+  --soft-warning-bg: #fffbeb;
+  --soft-warning-text: #92400e;
+  --soft-danger-bg: #fef2f2;
+  --soft-danger-text: #991b1b;
+  --soft-info-bg: #f0f9ff;
+  --soft-info-text: #075985;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--surface-bg);
+  color: var(--text-body);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.text-navy {
+  color: var(--navy-primary) !important;
+}
+
+/* Soft Tint Utilities */
+.bg-light-primary {
+  background-color: var(--soft-primary-bg) !important;
+  color: var(--soft-primary-text) !important;
+}
+.bg-light-success {
+  background-color: var(--soft-success-bg) !important;
+  color: var(--soft-success-text) !important;
+}
+.bg-light-warning {
+  background-color: var(--soft-warning-bg) !important;
+  color: var(--soft-warning-text) !important;
+}
+.bg-light-danger {
+  background-color: var(--soft-danger-bg) !important;
+  color: var(--soft-danger-text) !important;
+}
+.bg-light-info {
+  background-color: var(--soft-info-bg) !important;
+  color: var(--soft-info-text) !important;
+}
+
+/* Top Navbar */
+.app-navbar {
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky;
+  top: 0;
+  z-index: 1020;
+}
+
+/* Cards & Containers */
+.pro-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.85rem;
+  box-shadow: 0 2px 6px rgba(37, 57, 111, 0.04);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.pro-card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(37, 57, 111, 0.08);
+}
+
+.detail-info-card {
+  padding: 0.85rem 1rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--border-subtle);
+  background-color: #ffffff;
+  height: 100%;
+}
+
+.detail-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.detail-value {
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--navy-primary);
+}
+
+/* Icon Centering Box */
+.stats-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 0.65rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Upload Dropzone */
+.upload-dropzone {
+  border: 2px dashed #cbd5e1;
+  border-radius: 0.85rem;
+  background-color: #f8fafc;
+  padding: 1.5rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.upload-dropzone:hover,
+.upload-dropzone.drag-active {
+  border-color: var(--brand-accent);
+  background-color: var(--soft-primary-bg);
+}
+
+/* Option Selector Buttons */
+.preset-btn {
+  border: 1px solid var(--border-subtle);
+  background: #ffffff;
+  border-radius: 0.65rem;
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  width: 100%;
+}
+
+.preset-btn:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.preset-btn.active {
+  border-color: var(--brand-accent);
+  background: var(--soft-primary-bg);
+  box-shadow: 0 0 0 1px var(--brand-accent);
+}
+
+/* Image Grid Card */
+.asset-thumb-wrapper {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  background-color: #0f172a;
+  background-image: linear-gradient(45deg, #1e293b 25%, transparent 25%),
+    linear-gradient(-45deg, #1e293b 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1e293b 75%),
+    linear-gradient(-45deg, transparent 75%, #1e293b 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  overflow: hidden;
+  border-top-left-radius: 0.8rem;
+  border-top-right-radius: 0.8rem;
+  cursor: pointer;
+}
+
+.asset-thumb-wrapper img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.25s ease;
+}
+
+.asset-thumb-wrapper:hover img {
+  transform: scale(1.03);
+}
+
+/* Before / After Comparison Slider */
+.compare-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  max-height: 440px;
+  background-color: #0f172a;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  user-select: none;
+  cursor: ew-resize;
+  border: 1px solid var(--border-subtle);
+}
+
+.compare-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.compare-layer img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.compare-clip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  overflow: hidden;
+  border-right: 2px solid #ffffff;
+}
+
+/* Keyword Tag Pills */
+.kw-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.6rem;
+  border-radius: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: #ffffff;
+  border: 1px solid var(--border-subtle);
+  color: var(--navy-primary);
+}
+
+.kw-pill.top-ten {
+  background: var(--soft-primary-bg);
+  border-color: #c7d2fe;
+  color: var(--soft-primary-text);
+}
+
+.kw-pill .kw-rank {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
+.kw-remove-btn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  line-height: 1;
+  color: #94a3b8;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+
+.kw-remove-btn:hover {
+  color: var(--adobe-red);
+}
+
+/* Primary Buttons */
+.btn-brand {
+  background-color: var(--brand-accent);
+  border-color: var(--brand-accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.btn-brand:hover,
+.btn-brand:focus {
+  background-color: var(--brand-accent-hover);
+  border-color: var(--brand-accent-hover);
+  color: #ffffff;
+}
+
+/* Mobile Responsive Typography */
+@media (max-width: 767.98px) {
+  .detail-value {
+    font-size: 1rem;
+  }
+  .pro-card {
+    border-radius: 0.75rem;
+  }
+}
+

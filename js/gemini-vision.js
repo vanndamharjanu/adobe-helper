@@ -302,6 +302,7 @@ ${customHint ? `\nUSER CONTEXT / FOCUS HINT: "${customHint}" (incorporate only i
         }
 
         const result = await response.json();
+        recordApiUsage(result?.usageMetadata);
         const rawText = result?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (!rawText) {
           throw new Error('Respons JSON dari Gemini kosong.');
@@ -333,6 +334,162 @@ ${customHint ? `\nUSER CONTEXT / FOCUS HINT: "${customHint}" (incorporate only i
   }
 
   throw new Error(`Gagal menganalisis gambar dengan Gemini Vision API: ${lastError?.message || 'Periksa kembali API Key atau koneksi internet Anda.'}`);
+}
+
+/**
+ * Tracks daily Gemini API requests & tokens in localStorage
+ * Note: Upscaling & Vector SVG conversion run 100% locally in the browser and use 0 tokens!
+ */
+const USAGE_STORAGE_KEY = 'adobe_helper_gemini_usage_v1';
+const FREE_DAILY_REQ_PER_KEY = 1500;
+
+export function getTodayApiUsage() {
+  const today = new Date().toISOString().slice(0, 10);
+  const rawKeys = (localStorage.getItem('adobe_helper_gemini_keys') || '').trim();
+  const keyCount = rawKeys ? rawKeys.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean).length : 0;
+  const dailyReqLimit = Math.max(1, keyCount) * FREE_DAILY_REQ_PER_KEY;
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(USAGE_STORAGE_KEY) || '{}');
+    if (saved.date === today) {
+      const requests = saved.requests || 0;
+      const totalTokens = saved.totalTokens || 0;
+      return {
+        date: today,
+        keyCount,
+        requests,
+        dailyReqLimit,
+        remainingRequests: Math.max(0, dailyReqLimit - requests),
+        totalTokens
+      };
+    }
+  } catch {}
+
+  return {
+    date: today,
+    keyCount,
+    requests: 0,
+    dailyReqLimit,
+    remainingRequests: dailyReqLimit,
+    totalTokens: 0
+  };
+}
+
+export function recordApiUsage(usageMetadata = {}) {
+  const current = getTodayApiUsage();
+  const addedTokens = Number(usageMetadata?.totalTokenCount) || 650;
+  const updated = {
+    date: current.date,
+    requests: current.requests + 1,
+    totalTokens: current.totalTokens + addedTokens
+  };
+  localStorage.setItem(USAGE_STORAGE_KEY, JSON.stringify(updated));
+  window.dispatchEvent(new CustomEvent('gemini-usage-updated'));
+}
+
+/**
+ * Generates custom Google Flow prompts for a user-specified microstock niche/topic
+ */
+export async function generateCustomFlowPrompts(topic, horizonText = 'Topik Kustom', preferredModel = 'gemini-3.8-flash') {
+  const cleanTopic = (topic || '').trim() || 'Sustainable Green Technology & Business';
+  const rawKeys = (localStorage.getItem('adobe_helper_gemini_keys') || '').trim();
+  const keys = rawKeys.split(/[\n,;]+/).map(k => k.trim()).filter(Boolean);
+
+  if (keys.length > 0) {
+    const apiKey = keys[Math.floor(Math.random() * keys.length)];
+    const promptText = `You are a Senior Adobe Stock Curator & Google Flow Prompt Engineer.
+The user wants to create microstock images for the theme: "${cleanTopic}".
+CRITICAL ANTI-REJECTION & ANTI-CLICHÉ RULES:
+1. DO NOT create 3 repetitive prompts of the exact same object. Instead, brainstorm 3 DIFFERENT specific objects/sub-subjects or unexpected commercial scenes related to "${cleanTopic}" (for example, if the theme is Christmas, Subject 1 could be a velvet Santa hat on a tropical travel suitcase, Subject 2 could be macro brushed-gold baubles on frosted pine, Subject 3 could be Nordic kraft gift boxes with dried orange slices).
+2. Make the compositions UNCONVENTIONAL and fresh so Adobe Stock curators do NOT reject them for "Similar Content / Spam".
+3. All prompts MUST be in English, include generous negative copy space for commercial buyers, and strictly forbid text, letters, brand logos, or watermarks.
+4. Provide 3 prompts with distinct visual styles:
+   - Prompt 1: "Subjek #1 • Foto Sudut Unik" (Unconventional editorial/commercial photo with copy space)
+   - Prompt 2: "Subjek #2 • 3D / Macro Detail" (Minimalist 3D podium stage or high-detail macro texture)
+   - Prompt 3: "Subjek #3 • Flat Vector (#FFFFFF)" (Clean flat vector illustration of related elements isolated on pure white #FFFFFF background for SVG conversion)`;
+
+    const schema = {
+      type: 'OBJECT',
+      properties: {
+        title: { type: 'STRING' },
+        category: { type: 'STRING' },
+        buyerTarget: { type: 'STRING' },
+        keywords: { type: 'ARRAY', items: { type: 'STRING' } },
+        prompts: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              style: { type: 'STRING' },
+              prompt: { type: 'STRING' }
+            },
+            required: ['style', 'prompt']
+          }
+        }
+      },
+      required: ['title', 'category', 'buyerTarget', 'keywords', 'prompts']
+    };
+
+    try {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${preferredModel}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: promptText }] }],
+          generationConfig: {
+            temperature: 0.65,
+            responseMimeType: 'application/json',
+            responseSchema: schema
+          }
+        })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        recordApiUsage(data?.usageMetadata);
+        const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (txt) {
+          const parsed = JSON.parse(txt);
+          return {
+            id: `custom-${Date.now()}`,
+            title: parsed.title || cleanTopic,
+            category: parsed.category || 'Business',
+            demandLevel: 'Topik Kustom',
+            timingLabel: `Kustom • 3 Subjek Berbeda`,
+            buyerTarget: parsed.buyerTarget || 'Agensi iklan, website komersial, kampanye pemasaran',
+            keywords: (parsed.keywords || []).slice(0, 12),
+            prompts: parsed.prompts || []
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Custom prompt AI fallback:', e.message);
+    }
+  }
+
+  // Instant Local Multi-Angle Anti-Cliché Builder (0 tokens used if no API key set)
+  return {
+    id: `custom-${Date.now()}`,
+    title: cleanTopic,
+    category: 'Commercial Stock',
+    demandLevel: 'Topik Kustom',
+    timingLabel: `Kustom • 3 Subjek Berbeda`,
+    buyerTarget: 'Kampanye pemasaran digital, banner website, dan desain komersial',
+    keywords: cleanTopic.toLowerCase().split(/\s+/).filter(Boolean).concat(['commercial', 'minimalist', 'modern', 'copy space', 'background', 'concept']),
+    prompts: [
+      {
+        style: 'Subjek #1 • Foto Sudut Unik & Copy Space',
+        prompt: `Unconventional off-center commercial editorial photography exploring ${cleanTopic} through a distinctive hero object and natural human environment interaction, dramatic morning window shadows, tactile authentic textures, 45% clean negative copy space on the left for ad typography, no text, no brand logos, no watermark.`
+      },
+      {
+        style: 'Subjek #2 • Macro / 3D Podium Komersial',
+        prompt: `Minimalist luxury 3D architectural travertine podium and macro close-up of secondary signature elements related to ${cleanTopic}, warm golden rim lighting, shallow depth of field, contemporary pastel and neutral studio backdrop with wide copy space, no text, no logos.`
+      },
+      {
+        style: 'Subjek #3 • Flat Vector Set (#FFFFFF)',
+        prompt: `Clean modern flat vector icon and illustration collection of 3 distinct objects representing ${cleanTopic}, bold geometric minimalist shapes, solid flat color palette completely isolated on pure white background #FFFFFF, ready for SVG cutout, no gradients, no text.`
+      }
+    ]
+  };
 }
 
 /**

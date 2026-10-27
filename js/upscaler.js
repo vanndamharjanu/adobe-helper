@@ -65,11 +65,91 @@ export function loadImageElement(src) {
 }
 
 /**
- * Applies profile-based Luminance Convolution & Edge-Preserving Denoise
- * Modes:
- * - 'ai-photorealistic': Subtle micro-contrast, strict halo clamping (±6), gentle flat-area denoise
- * - 'ai-illustration': Smooths diffusion grain in flat areas, crisp contour sharpening on edges
- * - 'ultra-sharp': High-definition Laplacian + Unsharp Mask with ±10 clamp
+ * Pre-cleans JPEG mosquito noise, compression blocks, and dirty white backgrounds
+ * at the original resolution BEFORE upscaling so artifacts are never magnified.
+ */
+function preCleanSourceCanvas(canvas) {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return;
+
+  const w = canvas.width;
+  const h = canvas.height;
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const src = imgData.data;
+  const out = new Uint8ClampedArray(src);
+
+  // Detect if image has a predominantly white background from corners
+  const cornerCoords = [
+    [1, 1], [w - 2, 1], [1, h - 2], [w - 2, h - 2]
+  ];
+  let whiteCorners = 0;
+  for (const [cx, cy] of cornerCoords) {
+    const idx = (Math.max(0, cy) * w + Math.max(0, cx)) * 4;
+    if (src[idx] > 238 && src[idx + 1] > 238 && src[idx + 2] > 238) {
+      whiteCorners++;
+    }
+  }
+  const hasWhiteBg = whiteCorners >= 3;
+
+  // 5x5 Edge-Preserving Bilateral Filter to remove JPEG mosquito noise around lines
+  for (let y = 2; y < h - 2; y++) {
+    const row = y * w;
+    for (let x = 2; x < w - 2; x++) {
+      const idx = (row + x) * 4;
+      const r0 = src[idx];
+      const g0 = src[idx + 1];
+      const b0 = src[idx + 2];
+
+      // Clean near-white JPEG mosquito smudges on white backgrounds
+      if (hasWhiteBg && r0 >= 241 && g0 >= 241 && b0 >= 241) {
+        const sat = Math.max(r0, g0, b0) - Math.min(r0, g0, b0);
+        if (sat <= 12) {
+          out[idx] = 255;
+          out[idx + 1] = 255;
+          out[idx + 2] = 255;
+          continue;
+        }
+      }
+
+      let rSum = r0 * 2;
+      let gSum = g0 * 2;
+      let bSum = b0 * 2;
+      let wSum = 2;
+
+      for (let dy = -2; dy <= 2; dy++) {
+        const ny = (y + dy) * w;
+        for (let dx = -2; dx <= 2; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nIdx = (ny + x + dx) * 4;
+          const nr = src[nIdx];
+          const ng = src[nIdx + 1];
+          const nb = src[nIdx + 2];
+
+          const colorDiff = Math.abs(nr - r0) + Math.abs(ng - g0) + Math.abs(nb - b0);
+          // Only blend neighbors that belong to the same color region (preserves sharp outlines)
+          if (colorDiff < 32) {
+            const weight = colorDiff < 14 ? 1.0 : 0.45;
+            rSum += nr * weight;
+            gSum += ng * weight;
+            bSum += nb * weight;
+            wSum += weight;
+          }
+        }
+      }
+
+      out[idx] = Math.round(rSum / wSum);
+      out[idx + 1] = Math.round(gSum / wSum);
+      out[idx + 2] = Math.round(bSum / wSum);
+    }
+  }
+
+  imgData.data.set(out);
+  ctx.putImageData(imgData, 0, 0);
+}
+
+/**
+ * Applies Isotropic (8-Connected Diagonal-Friendly) Edge-Preserving Filter
+ * Prevents stair-stepping on diagonal lines and eliminates ringing halos.
  */
 async function applyAdobeQcFilter(canvas, options = {}) {
   const mode = options.profile || 'ai-photorealistic';
@@ -83,24 +163,21 @@ async function applyAdobeQcFilter(canvas, options = {}) {
   const height = canvas.height;
   const totalPixels = width * height;
 
-  // Profile parameters
-  let edgeStrength = strength * 0.85;
-  let lapWeight = 0.22;
-  let haloClamp = 7;
-  let flatThreshold = 2.0;
+  // Balanced parameters that never over-sharpen or create jagged stair-steps
+  let usmAmount = 0.75 * strength;
+  let overshootAllowance = 0; // Strict 0 overshoot = zero halo and zero jagged clipping
+  let flatThreshold = 3.0;
   let denoiseMix = denoise ? 0.35 : 0;
 
   if (mode === 'ai-illustration') {
-    edgeStrength = strength * 1.05;
-    lapWeight = 0.28;
-    haloClamp = 9;
-    flatThreshold = 3.2; // Smoother flat color areas for AI illustrations
+    usmAmount = 0.85 * strength;
+    overshootAllowance = 0;
+    flatThreshold = 4.5;
     denoiseMix = denoise ? 0.55 : 0;
   } else if (mode === 'ultra-sharp') {
-    edgeStrength = strength * 1.15;
-    lapWeight = 0.32;
-    haloClamp = 11;
-    flatThreshold = 1.4;
+    usmAmount = 1.05 * strength;
+    overshootAllowance = 3;
+    flatThreshold = 1.8;
     denoiseMix = denoise ? 0.2 : 0;
   }
 
@@ -115,8 +192,9 @@ async function applyAdobeQcFilter(canvas, options = {}) {
     lum[i] = 0.299 * src[idx] + 0.587 * src[idx + 1] + 0.114 * src[idx + 2];
   }
 
-  // Separable [0.25, 0.5, 0.25] Gaussian pass for low-frequency reference
+  // Isotropic Gaussian blur pass (smooths equally in horizontal, vertical, and diagonal directions)
   const temp = new Float32Array(totalPixels);
+  const blurLum = new Float32Array(totalPixels);
   for (let y = 0; y < height; y++) {
     const row = y * width;
     for (let x = 0; x < width; x++) {
@@ -125,8 +203,6 @@ async function applyAdobeQcFilter(canvas, options = {}) {
       temp[row + x] = 0.25 * lum[row + xm1] + 0.5 * lum[row + x] + 0.25 * lum[row + xp1];
     }
   }
-
-  const blurLum = new Float32Array(totalPixels);
   for (let y = 0; y < height; y++) {
     const ym1 = y > 0 ? y - 1 : y;
     const yp1 = y < height - 1 ? y + 1 : y;
@@ -143,20 +219,20 @@ async function applyAdobeQcFilter(canvas, options = {}) {
     out[i] = src[i];
   }
 
-  // Process in row chunks to keep UI responsive even on 12MP - 16MP images
-  const chunkRows = 250;
+  // Process in row chunks to keep UI responsive on 12MP - 16MP images
+  const chunkRows = 240;
   for (let startY = 0; startY < height; startY += chunkRows) {
     const endY = Math.min(height, startY + chunkRows);
     for (let y = startY; y < endY; y++) {
-      const ym1 = y > 0 ? y - 1 : y;
-      const yp1 = y < height - 1 ? y + 1 : y;
+      const ym1 = y > 0 ? y - 1 : 0;
+      const yp1 = y < height - 1 ? y + 1 : height - 1;
       const row = y * width;
       const rowUp = ym1 * width;
       const rowDown = yp1 * width;
 
       for (let x = 0; x < width; x++) {
-        const xm1 = x > 0 ? x - 1 : x;
-        const xp1 = x < width - 1 ? x + 1 : x;
+        const xm1 = x > 0 ? x - 1 : 0;
+        const xp1 = x < width - 1 ? x + 1 : width - 1;
         const p = row + x;
         const idx = p * 4;
 
@@ -168,35 +244,45 @@ async function applyAdobeQcFilter(canvas, options = {}) {
         const idxDown = (rowDown + x) * 4;
         const idxLeft = (row + xm1) * 4;
         const idxRight = (row + xp1) * 4;
+        const idxUL = (rowUp + xm1) * 4;
+        const idxUR = (rowUp + xp1) * 4;
+        const idxDL = (rowDown + xm1) * 4;
+        const idxDR = (rowDown + xp1) * 4;
 
         if (grad < flatThreshold && denoiseMix > 0) {
-          // Flat area: suppress AI diffusion grain/noise
+          // Flat area: isotropic 8-neighbor smoothing to keep surfaces clean
           for (let c = 0; c < 3; c++) {
             const center = src[idx + c];
-            const avg = 0.25 * (src[idxUp + c] + src[idxDown + c] + src[idxLeft + c] + src[idxRight + c]);
+            const avg =
+              0.15 * (src[idxUp + c] + src[idxDown + c] + src[idxLeft + c] + src[idxRight + c]) +
+              0.10 * (src[idxUL + c] + src[idxUR + c] + src[idxDL + c] + src[idxDR + c]);
             out[idx + c] = Math.round(center * (1 - denoiseMix) + avg * denoiseMix);
           }
         } else {
-          // Edge / texture area: Luminance-guided sharpening with anti-halo clamping
-          const highPass = lum[p] - blurLum[p];
-          const adaptiveGain = grad > 12 ? edgeStrength * 0.9 : edgeStrength;
+          // Edge area: gentle isotropic unsharp mask strictly clamped to 3x3 local [min, max]
+          const lCenter = lum[p];
+          const lumDelta = (lCenter - blurLum[p]) * usmAmount;
+
+          const l1 = lum[rowUp + x];
+          const l2 = lum[rowDown + x];
+          const l3 = lum[row + xm1];
+          const l4 = lum[row + xp1];
+          const l5 = lum[rowUp + xm1];
+          const l6 = lum[rowUp + xp1];
+          const l7 = lum[rowDown + xm1];
+          const l8 = lum[rowDown + xp1];
+
+          const minL = Math.min(lCenter, l1, l2, l3, l4, l5, l6, l7, l8);
+          const maxL = Math.max(lCenter, l1, l2, l3, l4, l5, l6, l7, l8);
+
+          const targetLum = Math.max(
+            minL - overshootAllowance,
+            Math.min(maxL + overshootAllowance, lCenter + lumDelta)
+          );
+          const appliedDelta = targetLum - lCenter;
 
           for (let c = 0; c < 3; c++) {
-            const center = src[idx + c];
-            const nUp = src[idxUp + c];
-            const nDown = src[idxDown + c];
-            const nLeft = src[idxLeft + c];
-            const nRight = src[idxRight + c];
-
-            const lap = 4 * center - (nUp + nDown + nLeft + nRight);
-            const delta = (lap * lapWeight + highPass * 0.45) * adaptiveGain;
-
-            const minN = Math.min(center, nUp, nDown, nLeft, nRight);
-            const maxN = Math.max(center, nUp, nDown, nLeft, nRight);
-            const sharpened = center + delta;
-            const clamped = Math.max(minN - haloClamp, Math.min(maxN + haloClamp, sharpened));
-
-            out[idx + c] = Math.max(0, Math.min(255, Math.round(clamped)));
+            out[idx + c] = Math.max(0, Math.min(255, Math.round(src[idx + c] + appliedDelta)));
           }
         }
       }
@@ -211,7 +297,7 @@ async function applyAdobeQcFilter(canvas, options = {}) {
 }
 
 /**
- * Multi-step progressive upscaler (1.45x per pass)
+ * Smooth Anti-Aliased Upscaler with Pre-Denoising (No Jagged Stair-Steps)
  */
 export async function upscaleImage(sourceUrl, origW, origH, settings = {}) {
   const img = typeof sourceUrl === 'string' ? await loadImageElement(sourceUrl) : sourceUrl;
@@ -229,10 +315,13 @@ export async function upscaleImage(sourceUrl, origW, origH, settings = {}) {
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, 0, 0, currW, currH);
 
-  // Progressive 1.45x steps for smooth bicubic/lanczos interpolation
+  // Step 1: Clean JPEG mosquito noise and compression smudges at original resolution BEFORE upscaling
+  preCleanSourceCanvas(canvas);
+
+  // Step 2: Smooth progressive bicubic upscale (1.5x per pass, WITHOUT intermediate jagged sharpening)
   while (currW < targetW || currH < targetH) {
-    const nextW = Math.min(targetW, Math.round(currW * 1.45));
-    const nextH = Math.min(targetH, Math.round(currH * 1.45));
+    const nextW = Math.min(targetW, Math.round(currW * 1.5));
+    const nextH = Math.min(targetH, Math.round(currH * 1.5));
 
     const stepCanvas = document.createElement('canvas');
     stepCanvas.width = nextW;
@@ -249,7 +338,7 @@ export async function upscaleImage(sourceUrl, origW, origH, settings = {}) {
     if (currW >= targetW && currH >= targetH) break;
   }
 
-  // Apply selected Adobe QC Convolution & Denoise profile
+  // Step 3: Single isotropic edge-restoration pass at target resolution
   await applyAdobeQcFilter(canvas, {
     profile: settings.profile || 'ai-photorealistic',
     sharpness: settings.sharpness ?? 0.75,
@@ -395,5 +484,158 @@ export async function isolateSubjectBackground(sourceUrl, options = {}) {
     height: h,
     isTransparent: !fillWhite
   };
+}
+
+/**
+ * Smart 2x2 Grid Splitter & Auto-Centering Cropper
+ * Automatically finds the clean gutter between 4 icons/illustrations (or 2x2 photo grid),
+ * crops each of the 4 objects, and centers isolated icons on a clean padded canvas.
+ */
+export async function splitImageIntoQuadrants(sourceUrl, mimeType = 'image/jpeg') {
+  const img = typeof sourceUrl === 'string' ? await loadImageElement(sourceUrl) : sourceUrl;
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = w;
+  srcCanvas.height = h;
+  const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+  srcCtx.drawImage(img, 0, 0, w, h);
+
+  // Clean JPEG compression smudges before detecting & splitting
+  preCleanSourceCanvas(srcCanvas);
+
+  const imgData = srcCtx.getImageData(0, 0, w, h).data;
+
+  // Detect background color from corners & mid-borders
+  const corners = [
+    [2, 2], [w - 3, 2], [2, h - 3], [w - 3, h - 3],
+    [Math.floor(w / 2), 2], [Math.floor(w / 2), h - 3]
+  ];
+  let bgR = 0, bgG = 0, bgB = 0;
+  for (const [cx, cy] of corners) {
+    const idx = (Math.max(0, cy) * w + Math.max(0, cx)) * 4;
+    bgR += imgData[idx];
+    bgG += imgData[idx + 1];
+    bgB += imgData[idx + 2];
+  }
+  bgR = Math.round(bgR / corners.length);
+  bgG = Math.round(bgG / corners.length);
+  bgB = Math.round(bgB / corners.length);
+
+  const isForeground = (x, y) => {
+    const idx = (y * w + x) * 4;
+    if (imgData[idx + 3] < 30) return false;
+    const diff = Math.abs(imgData[idx] - bgR) + Math.abs(imgData[idx + 1] - bgG) + Math.abs(imgData[idx + 2] - bgB);
+    return diff > 36;
+  };
+
+  // Find best vertical gutter splitX between 35% and 65% of width
+  let splitX = Math.floor(w / 2);
+  let minColScore = Infinity;
+  const minXSearch = Math.floor(w * 0.35);
+  const maxXSearch = Math.floor(w * 0.65);
+  for (let x = minXSearch; x <= maxXSearch; x++) {
+    let fgCount = 0;
+    for (let y = 0; y < h; y += 2) {
+      if (isForeground(x, y)) fgCount++;
+    }
+    const centerBias = Math.abs(x - w / 2) * 0.05;
+    const score = fgCount + centerBias;
+    if (score < minColScore) {
+      minColScore = score;
+      splitX = x;
+    }
+  }
+
+  // Find best horizontal gutter splitY between 35% and 65% of height
+  let splitY = Math.floor(h / 2);
+  let minRowScore = Infinity;
+  const minYSearch = Math.floor(h * 0.35);
+  const maxYSearch = Math.floor(h * 0.65);
+  for (let y = minYSearch; y <= maxYSearch; y++) {
+    let fgCount = 0;
+    for (let x = 0; x < w; x += 2) {
+      if (isForeground(x, y)) fgCount++;
+    }
+    const centerBias = Math.abs(y - h / 2) * 0.05;
+    const score = fgCount + centerBias;
+    if (score < minRowScore) {
+      minRowScore = score;
+      splitY = y;
+    }
+  }
+
+  const quads = [
+    { x0: 0, y0: 0, x1: splitX, y1: splitY },
+    { x0: splitX, y0: 0, x1: w, y1: splitY },
+    { x0: 0, y0: splitY, x1: splitX, y1: h },
+    { x0: splitX, y0: splitY, x1: w, y1: h }
+  ];
+
+  const results = [];
+  const isLightBg = bgR > 235 && bgG > 235 && bgB > 235;
+
+  for (let i = 0; i < quads.length; i++) {
+    const q = quads[i];
+    const qw = q.x1 - q.x0;
+    const qh = q.y1 - q.y0;
+
+    // Detect tight bounding box of foreground object inside this quadrant
+    let minX = q.x1, minY = q.y1, maxX = q.x0, maxY = q.y0;
+    let fgPixels = 0;
+    for (let y = q.y0; y < q.y1; y++) {
+      for (let x = q.x0; x < q.x1; x++) {
+        if (isForeground(x, y)) {
+          fgPixels++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    const outCanvas = document.createElement('canvas');
+    const hasIsolatedObject = fgPixels > 100 && (maxX > minX) && (maxY > minY) && ((maxX - minX) < qw * 0.96 || (maxY - minY) < qh * 0.96);
+
+    if (hasIsolatedObject) {
+      // Center the detected icon/object cleanly with 14% breathing room padding
+      const objW = maxX - minX + 1;
+      const objH = maxY - minY + 1;
+      const side = Math.round(Math.max(objW, objH) * 1.28);
+      outCanvas.width = Math.max(side, qw);
+      outCanvas.height = Math.max(side, qh);
+
+      const outCtx = outCanvas.getContext('2d');
+      outCtx.fillStyle = isLightBg ? '#FFFFFF' : `rgb(${bgR}, ${bgG}, ${bgB})`;
+      outCtx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+
+      const dstX = Math.round((outCanvas.width - objW) / 2);
+      const dstY = Math.round((outCanvas.height - objH) / 2);
+      outCtx.drawImage(srcCanvas, minX, minY, objW, objH, dstX, dstY, objW, objH);
+    } else {
+      // Full quadrant crop
+      outCanvas.width = qw;
+      outCanvas.height = qh;
+      const outCtx = outCanvas.getContext('2d');
+      outCtx.drawImage(srcCanvas, q.x0, q.y0, qw, qh, 0, 0, qw, qh);
+    }
+
+    // Always export split crops as lossless PNG to avoid double-JPEG compression artifacts
+    const blob = await new Promise((resolve, reject) => {
+      outCanvas.toBlob(b => (b ? resolve(b) : reject(new Error('Gagal memotong bagian gambar.'))), 'image/png');
+    });
+
+    results.push({
+      index: i + 1,
+      blob,
+      url: URL.createObjectURL(blob),
+      width: outCanvas.width,
+      height: outCanvas.height
+    });
+  }
+
+  return results;
 }
 

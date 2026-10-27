@@ -1,17 +1,144 @@
-import { upscaleImage, isolateSubjectBackground } from './upscaler.js';
+import { upscaleImage, isolateSubjectBackground, splitImageIntoQuadrants } from './upscaler.js';
 import { convertImageToVector } from './vectorizer.js';
 import {
   analyzeImageWithGemini,
   discoverAvailableVisionModels,
   auditAdobeCompliance,
   sanitizeAdobeTitle,
-  sanitizeAdobeKeywords
+  sanitizeAdobeKeywords,
+  getTodayApiUsage,
+  generateCustomFlowPrompts
 } from './gemini-vision.js';
 import {
   ADOBE_CATEGORIES,
   embedMetadataIntoBlob,
+  getExportFilename,
   generateAgencyCsv
 } from './xmp-exporter.js';
+import {
+  MONTH_NAMES_ID,
+  getNichesByHorizon
+} from './niche-prompts.js';
+
+// IndexedDB Queue Persistence (so page refresh does not lose images/metadata)
+const DB_NAME = 'microstock_adobe_helper_db';
+const DB_STORE = 'queue_items';
+
+function openQueueDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error('IndexedDB unavailable'));
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) {
+        db.createObjectStore(DB_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveItemToDb(item) {
+  try {
+    const db = await openQueueDb();
+    const record = {
+      id: item.id,
+      orderIndex: state.items.findIndex(i => i.id === item.id),
+      file: item.file,
+      name: item.name,
+      originalWidth: item.originalWidth,
+      originalHeight: item.originalHeight,
+      originalMegapixels: item.originalMegapixels,
+      originalSize: item.originalSize,
+      status: item.status === 'processing' ? 'waiting' : item.status,
+      metadata: item.metadata,
+      upscaledWidth: item.upscaledWidth,
+      upscaledHeight: item.upscaledHeight,
+      upscaledMegapixels: item.upscaledMegapixels,
+      upscaledBlob: item.upscaledBlob || null,
+      upscaledSize: item.upscaledSize || null,
+      exportExt: item.exportExt || null,
+      isIsolated: Boolean(item.isIsolated),
+      isolatedBlob: item.isolatedBlob || null,
+      isVectorized: Boolean(item.isVectorized),
+      svgString: item.svgString || null,
+      epsString: item.epsString || null,
+      vectorPathCount: item.vectorPathCount || 0,
+      vectorColorCount: item.vectorColorCount || 0,
+      vectorSuitability: item.vectorSuitability || null
+    };
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).put(record);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('Persist item warning:', err);
+  }
+}
+
+async function deleteItemFromDb(id) {
+  try {
+    const db = await openQueueDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('Delete item warning:', err);
+  }
+}
+
+async function clearQueueDb() {
+  try {
+    const db = await openQueueDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('Clear DB warning:', err);
+  }
+}
+
+async function restoreQueueFromDb() {
+  try {
+    const db = await openQueueDb();
+    const records = await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readonly');
+      const req = tx.objectStore(DB_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    if (!records.length) return;
+
+    records.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0));
+    state.items = records.map(rec => {
+      const item = {
+        ...rec,
+        stepText: '',
+        previewUrl: rec.file ? URL.createObjectURL(rec.file) : '',
+        upscaledUrl: rec.upscaledBlob ? URL.createObjectURL(rec.upscaledBlob) : null,
+        isolatedUrl: rec.isolatedBlob ? URL.createObjectURL(rec.isolatedBlob) : null,
+        svgBlob: rec.svgString ? new Blob([rec.svgString], { type: 'image/svg+xml;charset=utf-8' }) : null,
+        epsBlob: rec.epsString ? new Blob([rec.epsString], { type: 'application/postscript' }) : null
+      };
+      if (item.svgBlob) item.svgUrl = URL.createObjectURL(item.svgBlob);
+      if (item.epsBlob) item.epsUrl = URL.createObjectURL(item.epsBlob);
+      item.audit = auditAdobeCompliance(item);
+      return item;
+    });
+    refreshStatsAndGrid();
+  } catch (err) {
+    console.warn('Restore queue warning:', err);
+  }
+}
 
 // Application State
 const state = {
@@ -53,6 +180,15 @@ let inspectModalInstance = null;
 let apiKeyModalInstance = null;
 let exportModalInstance = null;
 let guideModalInstance = null;
+let nicheModalInstance = null;
+
+// Niche Explorer State
+const nicheState = {
+  horizon: 'ahead_3_6',
+  baseMonth: new Date().getMonth(),
+  seedMap: {},
+  customNiches: []
+};
 
 function formatBytes(bytes = 0) {
   if (!bytes) return '0 KB';
@@ -97,20 +233,86 @@ function updateApiKeyBanner() {
   const banner = document.getElementById('missingKeyAlert');
   const btnOpen = document.getElementById('btnOpenApiModal');
   const statusSpan = document.getElementById('apiKeyStatusBadge');
+  const usage = getTodayApiUsage();
 
   if (banner) {
     banner.classList.toggle('d-none', hasKey);
   }
   if (btnOpen && statusSpan) {
     if (hasKey) {
-      const count = savedKeys.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean).length;
-      btnOpen.className = 'btn btn-sm bg-light-success border border-success-subtle d-inline-flex align-items-center';
-      statusSpan.textContent = `Gemini Vision Aktif (${count} Key)`;
+      btnOpen.className = 'btn btn-sm bg-light-primary border border-primary-subtle';
+      statusSpan.textContent = `API (${usage.remainingRequests} sisa)`;
     } else {
-      btnOpen.className = 'btn btn-sm bg-light-warning border border-warning-subtle d-inline-flex align-items-center';
-      statusSpan.textContent = 'Set Gemini API Key';
+      btnOpen.className = 'btn btn-sm bg-light-warning border border-warning-subtle';
+      statusSpan.textContent = 'API Key';
     }
   }
+
+  const reqUsedEl = document.getElementById('statApiReqUsed');
+  const tokUsedEl = document.getElementById('statApiTokensUsed');
+  const reqRemEl = document.getElementById('statApiReqRemaining');
+  if (reqUsedEl) reqUsedEl.textContent = usage.requests.toLocaleString('id-ID');
+  if (tokUsedEl) tokUsedEl.textContent = usage.totalTokens.toLocaleString('id-ID');
+  if (reqRemEl) reqRemEl.textContent = usage.remainingRequests.toLocaleString('id-ID');
+}
+
+function renderNicheCards() {
+  const container = document.getElementById('nicheCardsContainer');
+  if (!container) return;
+
+  const calendarNiches = getNichesByHorizon(nicheState.horizon, nicheState.baseMonth, nicheState.seedMap);
+  const allNiches = [...nicheState.customNiches, ...calendarNiches];
+
+  container.innerHTML = allNiches.map(niche => {
+    const promptsHtml = (niche.prompts || []).map(p => `
+      <div class="p-2 rounded-2 bg-light border d-flex flex-column gap-1">
+        <div class="d-flex justify-content-between align-items-center gap-2">
+          <span class="badge bg-white text-navy border text-wrap text-start">${p.style}</span>
+          <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 flex-shrink-0" style="font-size: 0.74rem;" data-copy-prompt="${encodeURIComponent(p.prompt)}">
+            Salin Prompt
+          </button>
+        </div>
+        <div class="font-monospace text-muted text-break" style="font-size: 0.75rem; line-height: 1.45;">
+          ${p.prompt}
+        </div>
+      </div>
+    `).join('');
+
+    const kwHtml = (niche.keywords || []).slice(0, 8).map(k => `<span class="badge bg-white text-muted border fw-normal">${k}</span>`).join(' ');
+    const hasSubPool = Array.isArray(niche.subSubjects) && niche.subSubjects.length > 3;
+
+    return `
+      <div class="col-12 col-md-6 col-xl-4">
+        <div class="pro-card p-3 h-100 d-flex flex-column justify-content-between gap-2">
+          <div>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+              <span class="badge bg-light-primary border border-primary-subtle text-wrap text-start">${niche.timingLabel || niche.demandLevel}</span>
+              <div class="d-flex gap-1">
+                ${hasSubPool ? `
+                  <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.74rem;" data-shuffle-niche="${niche.id}">
+                    Acak 3 Subjek Lain
+                  </button>
+                ` : ''}
+                <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 0.74rem;" data-apply-theme="${encodeURIComponent(niche.title)}">
+                  Pakai Tema
+                </button>
+              </div>
+            </div>
+            <h6 class="fw-bold text-navy mb-1 text-break" style="font-size: 0.95rem;">${niche.title}</h6>
+            <div class="text-muted mb-2 text-break" style="font-size: 0.77rem;">
+              Target: ${niche.buyerTarget}
+            </div>
+            <div class="d-flex flex-wrap gap-1 mb-2">
+              ${kwHtml}
+            </div>
+            <div class="d-flex flex-column gap-2">
+              ${promptsHtml}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 function populateCategoryDropdown() {
@@ -193,9 +395,9 @@ function refreshStatsAndGrid() {
     if (item.status === 'processing') {
       statusBadge = `<span class="badge bg-primary"><span class="spinner-border spinner-border-sm me-1" style="width:10px;height:10px;"></span>${item.stepText || 'Memproses...'}</span>`;
     } else if (item.status === 'done') {
-      statusBadge = `<span class="badge bg-success"><i class="bi bi-check2 me-1"></i>Selesai</span>`;
+      statusBadge = `<span class="badge bg-primary">Selesai</span>`;
     } else if (item.status === 'error') {
-      statusBadge = `<span class="badge bg-danger"><i class="bi bi-exclamation-circle me-1"></i>Perlu Cek</span>`;
+      statusBadge = `<span class="badge bg-danger">Perlu Cek</span>`;
     }
 
     return `
@@ -205,12 +407,12 @@ function refreshStatsAndGrid() {
             <img src="${thumbSrc}" alt="${item.name}" loading="lazy" />
             <div class="position-absolute top-0 start-0 m-2 d-flex gap-1 flex-wrap">
               ${statusBadge}
-              ${item.isVectorized ? '<span class="badge bg-info text-dark fw-bold">SVG / EPS</span>' : ''}
-              ${item.isIsolated ? '<span class="badge bg-warning text-dark">Cutout</span>' : ''}
+              ${item.isVectorized ? '<span class="badge bg-white text-navy border">SVG / EPS</span>' : ''}
+              ${item.isIsolated ? '<span class="badge bg-white text-navy border">Cutout</span>' : ''}
             </div>
             <div class="position-absolute top-0 end-0 m-2">
               <span class="badge ${isMpOk ? 'bg-dark bg-opacity-75' : 'bg-danger'} font-monospace">
-                ${mp.toFixed(2)} MP ${isMpOk ? '✓' : '(<4MP)'}
+                ${mp.toFixed(1)} MP
               </span>
             </div>
           </div>
@@ -218,60 +420,59 @@ function refreshStatsAndGrid() {
           <div class="p-3 flex-grow-1 d-flex flex-column justify-content-between gap-2">
             <div>
               <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
-                <div class="fw-bold text-navy small text-break" style="cursor:pointer;" data-action="inspect" data-id="${item.id}">
+                <div class="fw-semibold text-navy small text-truncate" style="cursor:pointer;" data-action="inspect" data-id="${item.id}" title="${item.name}">
                   ${item.name}
                 </div>
-                <span class="font-monospace text-muted flex-shrink-0" style="font-size:0.75rem;">
+                <span class="font-monospace text-muted flex-shrink-0" style="font-size:0.74rem;">
                   ${formatBytes(item.upscaledSize || item.originalSize)}
                 </span>
               </div>
 
-              <div class="font-monospace text-muted mb-2" style="font-size:0.76rem;">
-                ${w} × ${h} px
-                ${item.upscaledUrl ? '<span class="text-success fw-semibold ms-1">• Upscaled</span>' : ''}
+              <div class="font-monospace text-muted mb-2" style="font-size:0.74rem;">
+                ${w} × ${h} px${item.upscaledUrl ? ' • <span class="text-primary fw-semibold">Upscaled</span>' : ''}
               </div>
 
-              <div class="p-2 rounded-3 border bg-light">
+              <div class="p-2 rounded-2 border bg-light">
                 ${hasMeta ? `
-                  <div class="fw-semibold text-navy small text-break mb-1" style="line-height:1.35;">
+                  <div class="fw-medium text-navy small text-break mb-1" style="line-height:1.35;">
                     ${item.metadata.title}
                   </div>
-                  <div class="d-flex align-items-center justify-content-between flex-wrap gap-1" style="font-size:0.75rem;">
-                    <span class="badge bg-white text-navy border">${item.metadata.category || 'Graphic Resources'}</span>
-                    <span class="font-monospace text-success fw-semibold">${kwCount} keywords</span>
+                  <div class="d-flex align-items-center justify-content-between flex-wrap gap-1" style="font-size:0.74rem;">
+                    <span class="text-muted">${item.metadata.category || 'Graphic Resources'}</span>
+                    <span class="font-monospace text-primary fw-semibold">${kwCount} tags</span>
                   </div>
                 ` : `
-                  <div class="text-muted small fst-italic">
-                    <i class="bi bi-stars text-primary me-1"></i>Belum dianalisis Vision AI. Klik <strong>Meta AI</strong> untuk membuat metadata sesuai isi gambar.
+                  <div class="text-muted small">
+                    Metadata belum dibuat
                   </div>
                 `}
               </div>
             </div>
 
-            <div class="pt-2 border-top d-flex align-items-center justify-content-between gap-1 flex-nowrap">
-              <div class="d-flex gap-1 flex-nowrap">
-                <button type="button" class="btn btn-sm btn-outline-primary py-1 px-2" data-action="upscale" data-id="${item.id}" title="Upscale Resolusi">
-                  <i class="bi bi-arrows-angle-expand"></i>
-                  <span class="d-none d-sm-inline ms-1">Upscale</span>
+            <div class="pt-2 border-top d-flex align-items-center justify-content-between gap-1 flex-wrap">
+              <div class="d-flex gap-1 flex-wrap">
+                <button type="button" class="btn btn-sm btn-outline-primary py-1 px-2" data-action="upscale" data-id="${item.id}">
+                  Upscale
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-primary py-1 px-2" data-action="meta" data-id="${item.id}" title="Generate Metadata dengan Gemini Vision">
-                  <i class="bi bi-stars"></i>
-                  <span class="d-none d-sm-inline ms-1">Meta AI</span>
+                <button type="button" class="btn btn-sm btn-outline-primary py-1 px-2" data-action="meta" data-id="${item.id}">
+                  Meta
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-dark py-1 px-2" data-action="vector" data-id="${item.id}" title="Konversi ke Vector .SVG & .EPS">
-                  <i class="bi bi-bezier2"></i>
-                  <span class="d-none d-xl-inline ms-1">SVG</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" data-action="vector" data-id="${item.id}">
+                  SVG
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" data-action="split4" data-id="${item.id}" title="Pecah Grid 2x2 menjadi 4 gambar terpisah">
+                  Pecah 4
                 </button>
               </div>
 
-              <div class="d-flex gap-1 flex-nowrap">
-                <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" data-action="inspect" data-id="${item.id}" title="Inspeksi & Edit Metadata">
-                  <i class="bi bi-sliders"></i>
+              <div class="d-flex gap-1">
+                <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" data-action="inspect" data-id="${item.id}" title="Edit">
+                  Edit
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-success py-1 px-2" data-action="download" data-id="${item.id}" title="Download File (XMP Embedded)">
+                <button type="button" class="btn btn-sm btn-brand py-1 px-2" data-action="download" data-id="${item.id}" title="Download">
                   <i class="bi bi-download"></i>
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-danger py-1 px-2" data-action="remove" data-id="${item.id}" title="Hapus dari Antrean">
+                <button type="button" class="btn btn-sm btn-outline-danger py-1 px-2" data-action="remove" data-id="${item.id}" title="Hapus">
                   <i class="bi bi-trash3"></i>
                 </button>
               </div>
@@ -322,6 +523,7 @@ async function handleFilesAdded(fileList) {
     };
     item.audit = auditAdobeCompliance(item);
     state.items.push(item);
+    await saveItemToDb(item);
   }
 
   refreshStatsAndGrid();
@@ -372,6 +574,7 @@ async function runSingleUpscale(item) {
     item.status = 'done';
     item.stepText = '';
     item.audit = auditAdobeCompliance(item);
+    await saveItemToDb(item);
   } catch (err) {
     console.error('Upscale error:', err);
     item.status = 'error';
@@ -414,6 +617,7 @@ async function runSingleVisionMeta(item) {
     item.status = 'done';
     item.stepText = '';
     item.audit = auditAdobeCompliance(item);
+    await saveItemToDb(item);
   } catch (err) {
     console.error('Gemini Vision error:', err);
     item.status = 'error';
@@ -433,22 +637,16 @@ async function runSingleVectorize(item) {
   refreshStatsAndGrid();
 
   try {
-    let srcUrl = item.upscaledUrl || item.previewUrl;
-    if (state.settings.autoIsolateBg && !item.isIsolated) {
-      const iso = await isolateSubjectBackground(srcUrl, {
-        tolerance: state.settings.bgTolerance,
-        fillWhite: false
-      });
-      item.isIsolated = true;
-      item.isolatedBlob = iso.blob;
-      item.isolatedUrl = iso.url;
-      srcUrl = iso.url;
-    }
+    const srcUrl = item.isolatedUrl || item.previewUrl;
 
     const vec = await convertImageToVector(srcUrl, {
       colors: state.settings.vectorColors,
       minSpeckleArea: state.settings.minSpeckleArea,
-      metadata: item.metadata || {}
+      removeBackground: !!state.settings.autoIsolateBg && !item.isIsolated,
+      metadata: item.metadata || {},
+      onProgress: (phase) => {
+        item.stepText = phase;
+      }
     });
 
     item.isVectorized = true;
@@ -464,8 +662,9 @@ async function runSingleVectorize(item) {
     item.status = 'done';
     item.stepText = '';
     item.audit = auditAdobeCompliance(item);
+    await saveItemToDb(item);
 
-    showToast('Konversi Vector Selesai', `${item.name}: ${vec.pathCount} kurva Bezier (${vec.colorCount} warna) dibuat.`, 'success');
+    showToast('Konversi Vector Selesai', `${item.name}: ${vec.pathCount} bentuk (${vec.colorCount} warna, mode ${vec.engine || 'Hybrid'}) siap diunduh.`, 'success');
   } catch (err) {
     console.error('Vectorize error:', err);
     item.status = 'error';
@@ -480,6 +679,65 @@ async function runSingleVectorize(item) {
   }
 }
 
+async function runSingleSplitFour(item) {
+  item.status = 'processing';
+  item.stepText = 'Memotong 4...';
+  refreshStatsAndGrid();
+
+  try {
+    const baseName = item.name.replace(/\.[^/.]+$/, '');
+    const parts = await splitImageIntoQuadrants(item.previewUrl, 'image/png');
+    const newItems = [];
+
+    for (const part of parts) {
+      const partName = `${baseName}_part${part.index}.png`;
+      const partFile = new File([part.blob], partName, { type: 'image/png' });
+      const mp = (part.width * part.height) / 1e6;
+
+      const newItem = {
+        id: `item-${Date.now()}-${part.index}-${Math.random().toString(36).slice(2, 6)}`,
+        file: partFile,
+        name: partName,
+        originalWidth: part.width,
+        originalHeight: part.height,
+        originalMegapixels: mp,
+        originalSize: part.blob.size,
+        previewUrl: part.url,
+        status: 'waiting',
+        stepText: '',
+        metadata: null
+      };
+      newItem.audit = auditAdobeCompliance(newItem);
+      newItems.push(newItem);
+      await saveItemToDb(newItem);
+    }
+
+    // Replace or insert right after the original 2x2 grid item
+    const origIdx = state.items.findIndex(i => i.id === item.id);
+    if (origIdx !== -1) {
+      state.items.splice(origIdx + 1, 0, ...newItems);
+    } else {
+      state.items.push(...newItems);
+    }
+
+    item.status = 'done';
+    item.stepText = '';
+    await saveItemToDb(item);
+    refreshStatsAndGrid();
+
+    if (state.activeItemId === item.id) {
+      inspectModalInstance?.hide();
+    }
+    showToast('Berhasil Dipecah Jadi 4 Gambar', `4 objek (${baseName}_part1 s/d part4) telah dipotong & dirapikan ke antrean.`, 'success');
+  } catch (err) {
+    console.error('Split 4 error:', err);
+    item.status = 'error';
+    item.stepText = 'Gagal Potong';
+    refreshStatsAndGrid();
+    showToast('Gagal Memotong Gambar', err.message, 'danger');
+  }
+}
+
 async function downloadSingleAsset(item, embedXmp = true) {
   try {
     let blob = item.upscaledBlob || item.isolatedBlob || item.file;
@@ -488,8 +746,8 @@ async function downloadSingleAsset(item, embedXmp = true) {
     }
 
     const ext = blob.type === 'image/png' ? '.png' : '.jpg';
-    const baseName = item.name.replace(/\.[^/.]+$/, '');
-    const outName = `${baseName}_adobe_stock${ext}`;
+    item.exportExt = ext;
+    const outName = getExportFilename(item);
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -608,11 +866,11 @@ function renderInspectModal(item) {
   const auditList = document.getElementById('modalAuditList');
   const issueCountBadge = document.getElementById('modalIssueCount');
   if (item.audit.issues.length === 0) {
-    issueCountBadge.className = 'badge bg-light-success';
-    issueCountBadge.textContent = 'Siap Upload ke Adobe Stock';
+    issueCountBadge.className = 'badge bg-light-primary';
+    issueCountBadge.textContent = 'Siap Upload';
     auditList.innerHTML = `
-      <div class="p-2 rounded-2 bg-light-success small">
-        <i class="bi bi-check-circle-fill me-1"></i>Resolusi, format judul, dan kata kunci telah memenuhi standar kurasi Adobe Stock Contributor.
+      <div class="p-2 rounded-2 bg-light-primary small">
+        Resolusi, judul, dan kata kunci telah memenuhi standar kurasi.
       </div>
     `;
   } else {
@@ -651,8 +909,8 @@ function updateCharCounters(title, desc) {
   const tLen = (title || '').length;
   const dLen = (desc || '').length;
   const tEl = document.getElementById('modalTitleCharCount');
-  tEl.textContent = `${tLen} / 70 karakter (Ideal: 50–70)`;
-  tEl.className = `font-monospace small ${tLen >= 50 && tLen <= 72 ? 'text-success fw-bold' : 'text-muted'}`;
+  tEl.textContent = `${tLen} / 70`;
+  tEl.className = `font-monospace small ${tLen >= 50 && tLen <= 72 ? 'text-primary fw-bold' : 'text-muted'}`;
   document.getElementById('modalDescCharCount').textContent = `${dLen} / 200`;
 }
 
@@ -661,7 +919,7 @@ function renderKeywordPills(keywords = []) {
   document.getElementById('modalKwCountBadge').textContent = `${keywords.length} / 49`;
 
   if (keywords.length === 0) {
-    container.innerHTML = `<div class="text-muted small py-3 text-center w-100">Belum ada keyword. Klik tombol <strong>Analisis Gemini Vision</strong> atau tambahkan manual di atas.</div>`;
+    container.innerHTML = `<div class="text-muted small py-3 text-center w-100">Belum ada keyword.</div>`;
     return;
   }
 
@@ -688,6 +946,7 @@ function syncActiveModalMetadata() {
 
   updateCharCounters(item.metadata.title, item.metadata.description);
   item.audit = auditAdobeCompliance(item);
+  saveItemToDb(item);
   refreshStatsAndGrid();
   return item;
 }
@@ -853,6 +1112,7 @@ async function loadAiSampleAssets() {
     };
     item.audit = auditAdobeCompliance(item);
     state.items.push(item);
+    await saveItemToDb(item);
   }
 
   refreshStatsAndGrid();
@@ -871,12 +1131,123 @@ document.addEventListener('DOMContentLoaded', () => {
   populateCategoryDropdown();
   updateApiKeyBanner();
   refreshStatsAndGrid();
+  restoreQueueFromDb();
+  renderNicheCards();
+
+  window.addEventListener('gemini-usage-updated', updateApiKeyBanner);
+
+  // Full-Page Navigation Switcher (Studio Gambar vs Niche & Prompt)
+  const switchMainPage = targetPage => {
+    const isNiche = targetPage === 'niche';
+    document.getElementById('viewStudio').classList.toggle('d-none', isNiche);
+    document.getElementById('viewNiche').classList.toggle('d-none', !isNiche);
+    document.querySelectorAll('#mainPageSwitch .nav-page-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.page === targetPage);
+    });
+    if (isNiche) {
+      renderNicheCards();
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  document.getElementById('mainPageSwitch').addEventListener('click', e => {
+    const btn = e.target.closest('[data-page]');
+    if (!btn) return;
+    switchMainPage(btn.dataset.page);
+  });
+
+  // Populate Niche Month Dropdown
+  const monthSel = document.getElementById('selectNicheBaseMonth');
+  if (monthSel) {
+    monthSel.innerHTML = MONTH_NAMES_ID.map((m, idx) => `<option value="${idx}" ${idx === nicheState.baseMonth ? 'selected' : ''}>${m}</option>`).join('');
+    monthSel.addEventListener('change', e => {
+      nicheState.baseMonth = parseInt(e.target.value, 10);
+      renderNicheCards();
+    });
+  }
+
+  document.getElementById('nicheHorizonGroup').addEventListener('click', e => {
+    const btn = e.target.closest('[data-horizon]');
+    if (!btn) return;
+    document.querySelectorAll('#nicheHorizonGroup button').forEach(b => {
+      b.className = 'btn btn-sm btn-outline-secondary bg-white';
+    });
+    btn.className = 'btn btn-sm btn-dark active';
+    nicheState.horizon = btn.dataset.horizon;
+    renderNicheCards();
+  });
+
+  document.getElementById('btnGenerateCustomPrompt').addEventListener('click', async () => {
+    const input = document.getElementById('inputCustomNicheTopic');
+    const topic = input.value.trim();
+    if (!topic) {
+      showToast('Masukkan Topik', 'Ketik topik atau event yang ingin dibuatkan prompt Google Flow.', 'warning');
+      return;
+    }
+    const btn = document.getElementById('btnGenerateCustomPrompt');
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Membuat...';
+    try {
+      const customCard = await generateCustomFlowPrompts(topic, 'Sesuai Tren & Musiman', state.settings.preferredModel);
+      nicheState.customNiches.unshift(customCard);
+      input.value = '';
+      renderNicheCards();
+      showToast('Prompt Siap', `3 variasi prompt Google Flow untuk "${topic}" berhasil dibuat.`, 'success');
+    } catch (err) {
+      showToast('Gagal Membuat Prompt', err.message, 'danger');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  });
+
+  document.getElementById('inputCustomNicheTopic').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('btnGenerateCustomPrompt').click();
+    }
+  });
+
+  document.getElementById('nicheCardsContainer').addEventListener('click', e => {
+    const shuffleBtn = e.target.closest('[data-shuffle-niche]');
+    if (shuffleBtn) {
+      const id = shuffleBtn.dataset.shuffleNiche;
+      nicheState.seedMap[id] = (nicheState.seedMap[id] || 0) + 1;
+      renderNicheCards();
+      return;
+    }
+
+    const copyBtn = e.target.closest('[data-copy-prompt]');
+    if (copyBtn) {
+      const promptText = decodeURIComponent(copyBtn.dataset.copyPrompt);
+      navigator.clipboard.writeText(promptText);
+      const prev = copyBtn.textContent;
+      copyBtn.textContent = 'Tersalin!';
+      setTimeout(() => { copyBtn.textContent = prev; }, 1500);
+      showToast('Prompt Disalin', 'Silakan tempel (paste) ke Google Flow / ImageFX.', 'success');
+      return;
+    }
+
+    const applyBtn = e.target.closest('[data-apply-theme]');
+    if (applyBtn) {
+      const theme = decodeURIComponent(applyBtn.dataset.applyTheme);
+      state.settings.focusTheme = theme;
+      const inputTheme = document.getElementById('inputFocusTheme');
+      if (inputTheme) inputTheme.value = theme;
+      switchMainPage('studio');
+      const metaTabBtn = document.querySelector('[data-bs-target="#tabVision"]');
+      if (metaTabBtn) bootstrap.Tab.getOrCreateInstance(metaTabBtn).show();
+      showToast('Tema Diterapkan', `Tema "${theme}" diterapkan ke pengaturan Metadata AI.`, 'success');
+    }
+  });
 
   // Header Buttons
   document.getElementById('btnOpenApiModal').addEventListener('click', () => {
     document.getElementById('inputGeminiKeys').value = localStorage.getItem('adobe_helper_gemini_keys') || '';
     document.getElementById('selectGeminiModel').value = state.settings.preferredModel;
     document.getElementById('apiTestResultBox').classList.add('d-none');
+    updateApiKeyBanner();
     apiKeyModalInstance.show();
   });
   document.getElementById('btnAlertOpenKey').addEventListener('click', () => {
@@ -1114,6 +1485,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (confirm('Hapus semua gambar dari daftar antrean?')) {
       state.items = [];
       state.activeItemId = null;
+      clearQueueDb();
       refreshStatsAndGrid();
     }
   });
@@ -1123,9 +1495,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const btn = e.target.closest('[data-filter]');
     if (!btn) return;
     document.querySelectorAll('#filterPillsGroup button').forEach(b => {
-      b.className = 'btn btn-sm btn-outline-secondary';
+      b.className = 'btn btn-sm btn-outline-secondary text-nowrap';
     });
-    btn.className = 'btn btn-sm btn-dark active';
+    btn.className = 'btn btn-sm btn-dark active text-nowrap';
     state.activeFilter = btn.dataset.filter;
     refreshStatsAndGrid();
   });
@@ -1148,9 +1520,11 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (action === 'upscale') runSingleUpscale(item);
     else if (action === 'meta') runSingleVisionMeta(item);
     else if (action === 'vector') runSingleVectorize(item);
+    else if (action === 'split4') runSingleSplitFour(item);
     else if (action === 'download') downloadSingleAsset(item, true);
     else if (action === 'remove') {
       state.items = state.items.filter(i => i.id !== id);
+      deleteItemFromDb(id);
       refreshStatsAndGrid();
     }
   });
@@ -1244,6 +1618,7 @@ document.addEventListener('DOMContentLoaded', () => {
       item.upscaledUrl = iso.url;
       item.upscaledSize = iso.blob.size;
       item.exportExt = iso.isTransparent ? '.png' : '.jpg';
+      await saveItemToDb(item);
       renderInspectModal(item);
       refreshStatsAndGrid();
       showToast('Background Dihapus', 'Subjek utama berhasil diisolasi.', 'success');
@@ -1255,6 +1630,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnModalVectorize').addEventListener('click', () => {
     const item = state.items.find(i => i.id === state.activeItemId);
     if (item) runSingleVectorize(item);
+  });
+
+  document.getElementById('btnModalSplit4').addEventListener('click', () => {
+    const item = state.items.find(i => i.id === state.activeItemId);
+    if (item) runSingleSplitFour(item);
   });
 
   document.getElementById('btnDownloadSvg').addEventListener('click', () => {
@@ -1399,12 +1779,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const ext = blob.type === 'image/png' ? '.png' : '.jpg';
         item.exportExt = ext;
+        const outFilename = getExportFilename(item);
         const arrBuf = await blob.arrayBuffer();
-        folder.file(`${baseName}${ext}`, arrBuf);
+        folder.file(outFilename, arrBuf);
 
         if (includeVectors && item.isVectorized) {
-          if (item.svgString) folder.file(`${baseName}.svg`, item.svgString);
-          if (item.epsString) folder.file(`${baseName}.eps`, item.epsString);
+          if (item.svgString) folder.file(`${baseName}_vector.svg`, item.svgString);
+          if (item.epsString) folder.file(`${baseName}_vector.eps`, item.epsString);
         }
 
         const pct = Math.round(((i + 1) / state.items.length) * 80);

@@ -213,6 +213,18 @@ function escapeCsvCell(val) {
   return `"${str.replace(/"/g, '""')}"`;
 }
 
+export function getExportFilename(item) {
+  const baseName = (item.name || 'image').replace(/\.[^/.]+$/, '');
+  const blob = item.upscaledBlob || item.isolatedBlob || item.file;
+  let ext = item.exportExt;
+  if (!ext) {
+    if (blob && blob.type === 'image/png') ext = '.png';
+    else if (item.isIsolated && !item.upscaledBlob) ext = '.png';
+    else ext = '.jpg';
+  }
+  return `${baseName}_adobe_stock${ext}`;
+}
+
 export function generateAgencyCsv(items, agency = 'adobe') {
   const rows = [];
   if (agency === 'adobe') {
@@ -222,9 +234,7 @@ export function generateAgencyCsv(items, agency = 'adobe') {
       const catObj = ADOBE_CATEGORIES.find(
         c => c.name.toLowerCase() === (meta.category || '').toLowerCase()
       ) || { id: 8, name: 'Graphic Resources' };
-      const ext = item.exportExt || (item.isIsolated ? '.png' : '.jpg');
-      const baseName = item.name.replace(/\.[^/.]+$/, '');
-      const filename = `${baseName}${ext}`;
+      const filename = getExportFilename(item);
       const title = meta.title || '';
       const keywords = (meta.keywords || []).slice(0, 49).join(', ');
       const release = meta.fictionalPeople ? 'Fictional People/Property (Generative AI)' : '';
@@ -240,10 +250,9 @@ export function generateAgencyCsv(items, agency = 'adobe') {
     rows.push(['Filename', 'Description', 'Keywords', 'Categories', 'Editorial', 'Mature content', 'Illustration'].join(','));
     for (const item of items) {
       const meta = item.metadata || {};
-      const ext = item.exportExt || (item.isIsolated ? '.png' : '.jpg');
-      const baseName = item.name.replace(/\.[^/.]+$/, '');
+      const filename = getExportFilename(item);
       rows.push([
-        escapeCsvCell(`${baseName}${ext}`),
+        escapeCsvCell(filename),
         escapeCsvCell(meta.description || meta.title || ''),
         escapeCsvCell((meta.keywords || []).slice(0, 50).join(', ')),
         escapeCsvCell(meta.category || 'Abstract'),
@@ -256,10 +265,9 @@ export function generateAgencyCsv(items, agency = 'adobe') {
     rows.push(['Filename', 'Title', 'Keywords', 'Prompt', 'Model'].join(','));
     for (const item of items) {
       const meta = item.metadata || {};
-      const ext = item.exportExt || (item.isIsolated ? '.png' : '.jpg');
-      const baseName = item.name.replace(/\.[^/.]+$/, '');
+      const filename = getExportFilename(item);
       rows.push([
-        escapeCsvCell(`${baseName}${ext}`),
+        escapeCsvCell(filename),
         escapeCsvCell(meta.title || ''),
         escapeCsvCell((meta.keywords || []).slice(0, 50).join(', ')),
         escapeCsvCell(meta.description || meta.title || ''),

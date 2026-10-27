@@ -1,16 +1,18 @@
 /**
- * True Contour & Smooth Bezier Curve Vectorizer (.SVG & .EPS)
- * Includes K-Means++ Color Quantization, Morphological Despeckle Filter,
- * Marching Contour Tracing, Douglas-Peucker Simplification & Bezier Curve Fitting.
+ * Hybrid Potrace + ImageTracerJS + Schneider Fit-Curve Vectorizer (.SVG & .EPS)
+ * Powered by Web Worker engine (vector-worker.js) with:
+ * - Automatic engine selection (Color Logo / Two-Tone / Illustration / Pixel Art)
+ * - Sub-pixel contour measurement & shared boundary junction locking
+ * - Geometric primitive recognition (circles, ellipses, rounded rects, polygons)
+ * - Self-repair defect scanner (OffscreenCanvas raster comparison & Potrace patching)
+ * - OKLab perceptual color unification & 16 MP Adobe Stock Microstock artboard scaling
  */
 
 import { loadImageElement } from './upscaler.js';
 import { escapeXml } from './xmp-exporter.js';
 
-function rgbToHex(r, g, b) {
-  const h = n => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
-  return `#${h(r)}${h(g)}${h(b)}`;
-}
+const STOCK_AREA = 16e6; // 16 MP standard for Adobe Stock Vector (15–65 MP requirement)
+const WORKER_SCRIPT_URL = new URL('./vector-worker.js', import.meta.url);
 
 /**
  * Evaluates whether an image is suitable for Adobe Stock Vector submission
@@ -28,7 +30,6 @@ export function evaluateVectorSuitability(imageData, width, height) {
     const idxRight = (i + 1) * 4;
     if (data[idx + 3] < 40) continue;
 
-    // Quantize to 5-bit per channel bucket
     const bucket = ((data[idx] >> 3) << 10) | ((data[idx + 1] >> 3) << 5) | (data[idx + 2] >> 3);
     colorBuckets.add(bucket);
 
@@ -47,282 +48,391 @@ export function evaluateVectorSuitability(imageData, width, height) {
     isPhotographic,
     uniqueColorBuckets: bucketCount,
     recommendation: isPhotographic
-      ? 'Gambar ini memiliki gradasi fotorealistis kompleks. Untuk Adobe Stock, sangat disarankan di-upload sebagai JPG High-Res (8MP-16MP) agar tidak ditolak karena "Auto-traced Bitmap".'
-      : 'Gambar memiliki kontur & warna tegas yang sangat cocok untuk dikonversi menjadi Vector (.SVG / .EPS).'
+      ? 'Gambar ini memiliki gradasi fotorealistis kompleks. Untuk Adobe Stock, disarankan di-upload sebagai JPG High-Res (8MP–16MP) agar tidak ditolak karena "Auto-traced Bitmap".'
+      : 'Gambar memiliki kontur & bidang warna tegas yang sangat cocok untuk dikonversi menjadi Vector (.SVG / .EPS).'
   };
 }
 
 /**
- * Morphological majority filter to remove tiny AI diffusion speckles before tracing
+ * Computes 16 MP Adobe Stock artboard dimensions while preserving aspect ratio & viewBox
  */
-function despeckleLabelMap(labels, w, h, passes = 2) {
-  let curr = new Int16Array(labels);
-  let next = new Int16Array(w * h);
-
-  for (let pass = 0; pass < passes; pass++) {
-    next.set(curr);
-    for (let y = 1; y < h - 1; y++) {
-      const row = y * w;
-      for (let x = 1; x < w - 1; x++) {
-        const p = row + x;
-        const center = curr[p];
-        if (center < 0) continue;
-
-        // Check 4-connected neighbors; if center is completely different from all 4, replace
-        const n1 = curr[p - 1];
-        const n2 = curr[p + 1];
-        const n3 = curr[p - w];
-        const n4 = curr[p + w];
-
-        if (center !== n1 && center !== n2 && center !== n3 && center !== n4) {
-          next[p] = n1 >= 0 ? n1 : n3;
-        } else if (n1 === n2 && n3 === n4 && n1 === n3 && center !== n1) {
-          next[p] = n1;
-        }
-      }
-    }
-    curr.set(next);
+function stockDims(svg, unit = 1) {
+  const tag = (svg.match(/<svg\b[^>]*>/) || [''])[0];
+  const get = k => {
+    const m = tag.match(new RegExp('\\s' + k + '="([\\d.]+)'));
+    return m ? +m[1] : 0;
+  };
+  let w = get('width');
+  let h = get('height');
+  if (!(w > 0 && h > 0)) {
+    const vb = ((tag.match(/viewBox="([^"]*)"/) || ['', ''])[1]).trim().split(/[\s,]+/).map(Number);
+    w = vb[2];
+    h = vb[3];
   }
-  return curr;
+  if (!(w > 0 && h > 0)) return null;
+  const a = w * h * unit * unit;
+  if (a >= 15.5e6 && a <= 64e6) return { w, h, same: true, ow: w, oh: h };
+  const k = Math.sqrt(STOCK_AREA / a);
+  const fit = v => Math.ceil(v * unit * k) / unit;
+  return { w: fit(w), h: fit(h), same: false, ow: w, oh: h };
+}
+
+function stockSVG(svg, unit = 1) {
+  const d = stockDims(svg, unit);
+  if (!d || d.same) return svg;
+  return svg.replace(/<svg\b[^>]*>/, tag => {
+    let t = tag.replace(/\swidth="[^"]*"/, '').replace(/\sheight="[^"]*"/, '');
+    if (!/\sviewBox=/.test(t)) {
+      t = t.replace(/^<svg\b/, `<svg viewBox="0 0 ${d.ow} ${d.oh}"`);
+    }
+    const f = v => String(+v.toFixed(4));
+    return t.replace(/^<svg\b/, `<svg width="${f(d.w)}" height="${f(d.h)}"`);
+  });
 }
 
 /**
- * Ramer-Douglas-Peucker polyline simplification
+ * Injects Dublin Core RDF metadata (<title>, <desc>, <dc:subject>) into the SVG root
  */
-function simplifyPolygon(points, epsilon = 1.15) {
-  if (points.length <= 4) return points;
+function injectSvgMetadata(svg, metadata = {}) {
+  const safeTitle = escapeXml(metadata.title || 'Commercial Vector Illustration Asset');
+  const safeDesc = escapeXml(metadata.description || safeTitle);
+  const safeKeywords = escapeXml((metadata.keywords || []).join(', '));
 
-  let dmax = 0;
-  let index = 0;
-  const end = points.length - 1;
-  const [x1, y1] = points[0];
-  const [x2, y2] = points[end];
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const lenSq = dx * dx + dy * dy;
+  const metaBlock = `<title>${safeTitle}</title><desc>${safeDesc}</desc><metadata><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Description><dc:title>${safeTitle}</dc:title><dc:description>${safeDesc}</dc:description><dc:subject>${safeKeywords}</dc:subject></rdf:Description></rdf:RDF></metadata>`;
 
-  for (let i = 1; i < end; i++) {
-    const [px, py] = points[i];
-    let dist;
-    if (lenSq === 0) {
-      dist = Math.hypot(px - x1, py - y1);
-    } else {
-      const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
-      dist = Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
-    }
-    if (dist > dmax) {
-      index = i;
-      dmax = dist;
-    }
-  }
-
-  if (dmax > epsilon) {
-    const rec1 = simplifyPolygon(points.slice(0, index + 1), epsilon);
-    const rec2 = simplifyPolygon(points.slice(index), epsilon);
-    return rec1.slice(0, rec1.length - 1).concat(rec2);
-  }
-  return [points[0], points[end]];
+  return svg.replace(/<svg\b[^>]*>/, match => `${match}${metaBlock}`);
 }
 
 /**
- * Converts a closed polygon into smooth Quadratic/Cubic Bezier SVG & PostScript commands
- * Preserves sharp corners when turn angle is steep, smooths curves elsewhere.
+ * PostScript Level 3 EPS Exporter (supports solid fills, evenodd/nonzero, and linear/radial gradients via shfill)
  */
-function polygonToBezierPaths(pts, scaleX, scaleY, curveTension = 0.5) {
-  const n = pts.length;
-  if (n < 3) return { svg: '', ps: '' };
+const epsNum = v => String(Math.round(v * 10000) / 10000);
 
-  const scaled = pts.map(([x, y]) => [
-    +(x * scaleX).toFixed(2),
-    +(y * scaleY).toFixed(2)
-  ]);
+function psRGB(c) {
+  if (!c) return null;
+  const s = String(c).trim().toLowerCase();
+  let m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/.exec(s);
+  if (m) return [m[1], m[2], m[3]].map(v => Math.min(255, +v) / 255);
+  m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(s);
+  if (m) {
+    let h = m[1];
+    if (h.length === 3) h = h.split('').map(x => x + x).join('');
+    return [0, 2, 4].map(i => parseInt(h.substr(i, 2), 16) / 255);
+  }
+  if (s === 'white') return [1, 1, 1];
+  if (s === 'black') return [0, 0, 0];
+  return null;
+}
 
-  if (n <= 4 || curveTension <= 0.05) {
-    let svg = `M ${scaled[0][0]} ${scaled[0][1]} `;
-    let ps = `${scaled[0][0]} ${scaled[0][1]} m `;
-    for (let i = 1; i < n; i++) {
-      svg += `L ${scaled[i][0]} ${scaled[i][1]} `;
-      ps += `${scaled[i][0]} ${scaled[i][1]} l `;
+function svgPathSegs(d) {
+  const toks = String(d).match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) || [];
+  const out = [];
+  const need = { M: 2, L: 2, T: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, A: 7 };
+  let i = 0, cmd = '', x = 0, y = 0, sx = 0, sy = 0, rc = null;
+
+  while (i < toks.length) {
+    if (/^[A-Za-z]$/.test(toks[i])) cmd = toks[i++];
+    else if (!cmd) { i++; continue; }
+    const up = cmd.toUpperCase();
+    const rel = cmd !== up;
+    if (up === 'Z') {
+      out.push({ c: 'Z' });
+      x = sx; y = sy; rc = null; cmd = '';
+      continue;
     }
-    return { svg: svg + 'Z ', ps: ps + 'cp\n' };
+    const n = need[up];
+    if (!n) { i++; continue; }
+    if (i + n > toks.length) break;
+    const a = [];
+    let bad = false;
+    for (let k = 0; k < n; k++) {
+      const t = toks[i + k];
+      if (/^[A-Za-z]$/.test(t)) { bad = true; break; }
+      a.push(+t);
+    }
+    if (bad) break;
+    i += n;
+    const ox = rel ? x : 0, oy = rel ? y : 0;
+    let nx = x, ny = y, nrc = null;
+    if (up === 'M') {
+      nx = a[0] + ox; ny = a[1] + oy;
+      out.push({ c: 'M', p: [nx, ny] });
+      sx = nx; sy = ny;
+      cmd = rel ? 'l' : 'L';
+    } else if (up === 'L' || up === 'T') {
+      nx = a[0] + ox; ny = a[1] + oy;
+      out.push({ c: 'L', p: [nx, ny] });
+    } else if (up === 'H') {
+      nx = a[0] + ox;
+      out.push({ c: 'L', p: [nx, y] });
+    } else if (up === 'V') {
+      ny = a[0] + oy;
+      out.push({ c: 'L', p: [x, ny] });
+    } else if (up === 'C' || up === 'S') {
+      let c1x = x, c1y = y;
+      if (up === 'C') { c1x = a[0] + ox; c1y = a[1] + oy; }
+      else if (rc) { c1x = 2 * x - rc[0]; c1y = 2 * y - rc[1]; }
+      const j = up === 'C' ? 2 : 0;
+      const c2x = a[j] + ox, c2y = a[j + 1] + oy;
+      nx = a[j + 2] + ox; ny = a[j + 3] + oy;
+      out.push({ c: 'C', p: [c1x, c1y, c2x, c2y, nx, ny] });
+      nrc = [c2x, c2y];
+    } else if (up === 'Q') {
+      const qx = a[0] + ox, qy = a[1] + oy;
+      nx = a[2] + ox; ny = a[3] + oy;
+      out.push({
+        c: 'C',
+        p: [
+          x + (2 / 3) * (qx - x),
+          y + (2 / 3) * (qy - y),
+          nx + (2 / 3) * (qx - nx),
+          ny + (2 / 3) * (qy - ny),
+          nx,
+          ny
+        ]
+      });
+    } else if (up === 'A') {
+      nx = a[5] + ox; ny = a[6] + oy;
+      out.push({ c: 'L', p: [nx, ny] });
+    }
+    x = nx; y = ny; rc = nrc;
   }
+  return out;
+}
 
-  // Compute midpoints between consecutive vertices for smooth Quadratic/Cubic Bezier spline
-  const mids = [];
-  for (let i = 0; i < n; i++) {
-    const curr = scaled[i];
-    const next = scaled[(i + 1) % n];
-    mids.push([
-      +((curr[0] + next[0]) / 2).toFixed(2),
-      +((curr[1] + next[1]) / 2).toFixed(2)
-    ]);
+function psOps(segs) {
+  const o = [];
+  for (const s of segs) {
+    if (s.c === 'Z') o.push('closepath');
+    else o.push(s.p.map(epsNum).join(' ') + ' ' + ({ M: 'moveto', L: 'lineto', C: 'curveto' })[s.c]);
   }
+  return o.join('\n');
+}
 
-  let svg = `M ${mids[n - 1][0]} ${mids[n - 1][1]} `;
-  let ps = `${mids[n - 1][0]} ${mids[n - 1][1]} m `;
-
-  for (let i = 0; i < n; i++) {
-    const prev = scaled[(i - 1 + n) % n];
-    const curr = scaled[i];
-    const next = scaled[(i + 1) % n];
-    const midOut = mids[i];
-
-    // Check corner angle
-    const v1x = curr[0] - prev[0], v1y = curr[1] - prev[1];
-    const v2x = next[0] - curr[0], v2y = next[1] - curr[1];
-    const mag1 = Math.hypot(v1x, v1y) || 1;
-    const mag2 = Math.hypot(v2x, v2y) || 1;
-    const cosAngle = (v1x * v2x + v1y * v2y) / (mag1 * mag2);
-
-    if (cosAngle < -0.35) {
-      // Sharp corner: preserve vertex directly
-      svg += `L ${curr[0]} ${curr[1]} L ${midOut[0]} ${midOut[1]} `;
-      ps += `${curr[0]} ${curr[1]} l ${midOut[0]} ${midOut[1]} l `;
-    } else {
-      // Smooth quadratic Bezier (converted to cubic for PostScript EPS compatibility)
-      const midIn = mids[(i - 1 + n) % n];
-      svg += `Q ${curr[0]} ${curr[1]} ${midOut[0]} ${midOut[1]} `;
-      const cp1x = +(midIn[0] + (2 / 3) * (curr[0] - midIn[0])).toFixed(2);
-      const cp1y = +(midIn[1] + (2 / 3) * (curr[1] - midIn[1])).toFixed(2);
-      const cp2x = +(midOut[0] + (2 / 3) * (curr[0] - midOut[0])).toFixed(2);
-      const cp2y = +(midOut[1] + (2 / 3) * (curr[1] - midOut[1])).toFixed(2);
-      ps += `${cp1x} ${cp1y} ${cp2x} ${cp2y} ${midOut[0]} ${midOut[1]} c `;
+function segsBBox(segs) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const s of segs) {
+    if (s.p) {
+      for (let k = 0; k < s.p.length; k += 2) {
+        x0 = Math.min(x0, s.p[k]);
+        x1 = Math.max(x1, s.p[k]);
+        y0 = Math.min(y0, s.p[k + 1]);
+        y1 = Math.max(y1, s.p[k + 1]);
+      }
     }
   }
+  return isFinite(x0) ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+}
 
-  return { svg: svg + 'Z ', ps: ps + 'cp\n' };
+function svgGradientStops(g) {
+  const stops = [];
+  let last = 0;
+  for (const s of g.querySelectorAll('stop')) {
+    const st = /stop-color:\s*([^;]+)/.exec(s.getAttribute('style') || '');
+    const col = psRGB(s.getAttribute('stop-color') || (st && st[1].trim())) || [0, 0, 0];
+    const ov = (s.getAttribute('offset') || '0').trim();
+    let o = parseFloat(ov);
+    if (!isFinite(o)) o = 0;
+    if (/%$/.test(ov)) o /= 100;
+    o = Math.min(1, Math.max(0, o));
+    if (o < last) o = last;
+    last = o;
+    stops.push({ o, c: col });
+  }
+  return stops;
+}
+
+function psFunction(stops) {
+  const st = stops.map(s => ({ o: s.o, c: s.c }));
+  for (let i = 1; i < st.length; i++) {
+    if (st[i].o <= st[i - 1].o) st[i].o = Math.min(1, st[i - 1].o + 1e-4);
+  }
+  const fn = (a, b) => '<< /FunctionType 2 /Domain [0 1] /C0 [' + a.map(epsNum).join(' ') + '] /C1 [' + b.map(epsNum).join(' ') + '] /N 1 >>';
+  if (st.length === 1) return fn(st[0].c, st[0].c);
+  if (st.length === 2) return fn(st[0].c, st[1].c);
+  const fns = [];
+  for (let i = 0; i < st.length - 1; i++) fns.push(fn(st[i].c, st[i + 1].c));
+  return '<< /FunctionType 3 /Domain [0 1] /Functions [' + fns.join(' ') + '] /Bounds [' + st.slice(1, -1).map(s => epsNum(s.o)).join(' ') + '] /Encode [' + st.slice(0, -1).map(() => '0 1').join(' ') + '] >>';
+}
+
+function gradientPS(g, bb, vb) {
+  const stops = svgGradientStops(g);
+  if (!stops.length) return null;
+  const last = stops[stops.length - 1].c;
+  const pre = [];
+  const bbox = (g.getAttribute('gradientUnits') || 'objectBoundingBox').trim() !== 'userSpaceOnUse';
+  const C = (attr, def, axis) => {
+    const s = (g.getAttribute(attr) || def).trim();
+    const n = parseFloat(s);
+    if (!isFinite(n)) return 0;
+    if (!/%$/.test(s)) return n;
+    const f = n / 100;
+    if (bbox) return f;
+    return f * (axis === 'x' ? vb[2] : axis === 'y' ? vb[3] : Math.hypot(vb[2], vb[3]) / Math.SQRT2);
+  };
+  if (bbox) {
+    if (!bb || bb.w <= 0 || bb.h <= 0) return { solid: last };
+    pre.push('[' + [bb.w, 0, 0, bb.h, bb.x, bb.y].map(epsNum).join(' ') + '] concat');
+  }
+  let type, coords;
+  if (g.tagName !== 'radialGradient') {
+    const x1 = C('x1', '0%', 'x'), y1 = C('y1', '0%', 'y'), x2 = C('x2', '100%', 'x'), y2 = C('y2', '0%', 'y');
+    if (x1 === x2 && y1 === y2) return { solid: last };
+    type = 2;
+    coords = [x1, y1, x2, y2];
+  } else {
+    const cx = C('cx', '50%', 'x'), cy = C('cy', '50%', 'y'), r = C('r', '50%', 'r');
+    if (!(r > 0)) return { solid: last };
+    const fx = g.hasAttribute('fx') ? C('fx', '50%', 'x') : cx;
+    const fy = g.hasAttribute('fy') ? C('fy', '50%', 'y') : cy;
+    type = 3;
+    coords = [fx, fy, 0, cx, cy, r];
+  }
+  const gt = (g.getAttribute('gradientTransform') || '').match(/matrix\(([^)]*)\)/);
+  if (gt) {
+    const m = gt[1].split(/[\s,]+/).filter(Boolean).map(Number);
+    if (m.length === 6 && m.every(isFinite)) pre.push('[' + m.map(epsNum).join(' ') + '] concat');
+  }
+  return {
+    pre,
+    dict: '<< /ShadingType ' + type + ' /ColorSpace /DeviceRGB /Coords [' + coords.map(epsNum).join(' ') + '] /Function ' + psFunction(stops) + ' /Extend [true true] >>'
+  };
+}
+
+export function svgToEPS(svg, title = 'Commercial Vector Asset', keywords = '') {
+  const doc = new DOMParser().parseFromString(String(svg), 'image/svg+xml');
+  const root = doc.documentElement;
+  const numAttr = v => {
+    const n = parseFloat(v);
+    return isFinite(n) && n > 0 ? n : 0;
+  };
+  let vb = (root.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+  if (vb.length !== 4 || !(vb[2] > 0 && vb[3] > 0)) {
+    vb = [0, 0, numAttr(root.getAttribute('width')) || 1, numAttr(root.getAttribute('height')) || 1];
+  }
+  const wPx = numAttr(root.getAttribute('width')) || vb[2];
+  const k = (wPx * 0.75) / vb[2];
+  const W = vb[2] * k;
+  const H = vb[3] * k;
+
+  const out = [
+    '%!PS-Adobe-3.0 EPSF-3.0',
+    '%%Creator: Microstock Adobe Helper Pro - Hybrid Potrace & Schneider Vector Engine',
+    '%%Title: ' + String(title || 'vector').replace(/[()\\\r\n]/g, '_'),
+    '%%Keywords: ' + String(keywords || '').replace(/[()\\\r\n]/g, ' '),
+    '%%BoundingBox: 0 0 ' + Math.ceil(W) + ' ' + Math.ceil(H),
+    '%%HiResBoundingBox: 0 0 ' + epsNum(W) + ' ' + epsNum(H),
+    '%%LanguageLevel: 3',
+    '%%EndComments',
+    'gsave',
+    '[' + [k, 0, 0, -k, -vb[0] * k, H + vb[1] * k].map(epsNum).join(' ') + '] concat'
+  ];
+
+  for (const p of doc.querySelectorAll('path')) {
+    const d = p.getAttribute('d');
+    if (!d) continue;
+    const fill = (p.getAttribute('fill') || ((/fill:\s*([^;]+)/.exec(p.getAttribute('style') || '')) || [])[1] || 'black').trim();
+    if (fill === 'none') continue;
+    const segs = svgPathSegs(d);
+    if (!segs.length) continue;
+    const eo = (p.getAttribute('fill-rule') || 'nonzero').trim() === 'evenodd';
+    const ops = psOps(segs);
+    const paint = eo ? 'eofill' : 'fill';
+    const clip = eo ? 'eoclip' : 'clip';
+    const ref = /^url\(#([^)]+)\)$/.exec(fill);
+    let col = ref ? null : psRGB(fill);
+    if (ref) {
+      const g = doc.getElementById(ref[1].replace(/['"]/g, ''));
+      const gp = g && /Gradient$/.test(g.tagName) ? gradientPS(g, segsBBox(segs), vb) : null;
+      if (gp && gp.dict) {
+        out.push('gsave', 'newpath', ops, clip, 'newpath', ...gp.pre, gp.dict, 'shfill', 'grestore');
+        continue;
+      }
+      col = (gp && gp.solid) || [0, 0, 0];
+    }
+    if (!col) col = [0, 0, 0];
+    out.push('gsave', col.map(epsNum).join(' ') + ' setrgbcolor', 'newpath', ops, paint, 'grestore');
+  }
+
+  out.push('grestore', 'showpage', '%%EOF');
+  return out.join('\n') + '\n';
 }
 
 /**
- * Traces connected components for a given color label using Moore-Neighbor boundary tracing
+ * Runs the Web Worker Vectorizer Engine (Potrace + ImageTracerJS + fit-curve + Self-Repair)
  */
-function traceColorLayerContours(labels, w, h, targetColorIdx, minAreaPixels = 10, epsilon = 1.2, scaleX = 1, scaleY = 1) {
-  const visited = new Uint8Array(w * h);
-  let svgPathData = '';
-  let psPathData = '';
-  let contourCount = 0;
+function runVectorWorker(imageData, origW, origH, settings, onProgress) {
+  return new Promise((resolve, reject) => {
+    let worker = null;
+    let settled = false;
 
-  // 8-neighborhood clockwise offsets: E, SE, S, SW, W, NW, N, NE
-  const dx = [1, 1, 0, -1, -1, -1, 0, 1];
-  const dy = [0, 1, 1, 1, 0, -1, -1, -1];
-
-  const bfsQueue = new Int32Array(w * h);
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const startP = y * w + x;
-      if (labels[startP] !== targetColorIdx || visited[startP] !== 0) continue;
-
-      // Flood-fill component to measure area & mark visited
-      let head = 0, tail = 0;
-      bfsQueue[tail++] = startP;
-      visited[startP] = 1;
-      let minX = x, maxX = x, minY = y, maxY = y;
-
-      while (head < tail) {
-        const p = bfsQueue[head++];
-        const px = p % w;
-        const py = (p - px) / w;
-        if (px < minX) minX = px;
-        if (px > maxX) maxX = px;
-        if (py < minY) minY = py;
-        if (py > maxY) maxY = py;
-
-        if (px > 0 && labels[p - 1] === targetColorIdx && visited[p - 1] === 0) {
-          visited[p - 1] = 1;
-          bfsQueue[tail++] = p - 1;
-        }
-        if (px < w - 1 && labels[p + 1] === targetColorIdx && visited[p + 1] === 0) {
-          visited[p + 1] = 1;
-          bfsQueue[tail++] = p + 1;
-        }
-        if (py > 0 && labels[p - w] === targetColorIdx && visited[p - w] === 0) {
-          visited[p - w] = 1;
-          bfsQueue[tail++] = p - w;
-        }
-        if (py < h - 1 && labels[p + w] === targetColorIdx && visited[p + w] === 0) {
-          visited[p + w] = 1;
-          bfsQueue[tail++] = p + w;
-        }
+    const finish = (err, result) => {
+      if (settled) return;
+      settled = true;
+      if (worker) {
+        try { worker.terminate(); } catch (e) {}
+        worker = null;
       }
+      if (err) reject(err);
+      else resolve(result);
+    };
 
-      // Skip tiny noise specks
-      if (tail < minAreaPixels) continue;
-
-      // Trace outer boundary of this connected component starting at (x, y)
-      const boundary = [];
-      let cx = x, cy = y;
-      let backtrackDir = 4; // West
-      let steps = 0;
-      const maxSteps = Math.min(w * h, (maxX - minX + maxY - minY + 8) * 16);
-
-      while (steps++ < maxSteps) {
-        boundary.push([cx + 0.5, cy + 0.5]);
-        let foundNext = false;
-        const startSearch = (backtrackDir + 1) & 7;
-
-        for (let k = 0; k < 8; k++) {
-          const dir = (startSearch + k) & 7;
-          const nx = cx + dx[dir];
-          const ny = cy + dy[dir];
-          if (nx >= minX && nx <= maxX && ny >= minY && ny <= maxY) {
-            const np = ny * w + nx;
-            if (labels[np] === targetColorIdx && visited[np] === 1) {
-              cx = nx;
-              cy = ny;
-              backtrackDir = (dir + 4) & 7;
-              foundNext = true;
-              break;
-            }
-          }
-        }
-
-        if (!foundNext || (cx === x && cy === y && boundary.length > 2)) {
-          break;
-        }
-      }
-
-      if (boundary.length >= 3) {
-        const simplified = simplifyPolygon(boundary, epsilon);
-        const { svg, ps } = polygonToBezierPaths(simplified, scaleX, scaleY, 0.5);
-        if (svg) {
-          svgPathData += svg;
-          psPathData += ps;
-          contourCount++;
-        }
-      }
+    try {
+      worker = new Worker(WORKER_SCRIPT_URL);
+    } catch (err) {
+      return finish(new Error('Gagal memulai Web Worker Vectorizer: ' + err.message));
     }
-  }
 
-  return { svgPathData, psPathData, contourCount };
+    worker.onerror = e => {
+      finish(new Error(e.message || 'Gagal memproses di Web Worker Vectorizer.'));
+    };
+
+    worker.onmessage = ({ data: m }) => {
+      if (!m) return;
+      if (m.phase) {
+        if (typeof onProgress === 'function') onProgress(m.phase, m.stage);
+        return;
+      }
+      if (m.error) {
+        return finish(new Error(m.error));
+      }
+      if (!m.svg || !/<path/.test(m.svg)) {
+        return finish(new Error('Tidak ada kurva vektor yang terbentuk dari gambar ini.'));
+      }
+      finish(null, m);
+    };
+
+    const bufferCopy = new Uint8ClampedArray(imageData.data).buffer;
+    worker.postMessage(
+      {
+        buffer: bufferCopy,
+        width: imageData.width,
+        height: imageData.height,
+        originalWidth: origW,
+        originalHeight: origH,
+        settings
+      },
+      [bufferCopy]
+    );
+  });
 }
 
 /**
  * Main Vectorizer Entry Point: Converts image into smooth Bezier .SVG & .EPS
  */
 export async function convertImageToVector(sourceUrl, options = {}) {
-  const numColors = Math.min(36, Math.max(4, options.colors || 18));
+  const numColors = Math.min(24, Math.max(2, options.colors || 16));
   const minSpeckleArea = options.minSpeckleArea ?? 12;
-  const simplifyEpsilon = options.simplifyEpsilon ?? 1.15;
   const metadata = options.metadata || {};
+  const maxWorkDim = options.maxResolution || 1000;
 
   const img = typeof sourceUrl === 'string' ? await loadImageElement(sourceUrl) : sourceUrl;
   const origW = img.naturalWidth || img.width;
   const origH = img.naturalHeight || img.height;
 
-  // Working grid resolution for contour extraction (balanced for sharp curves & speed)
-  const maxWorkDim = 820;
-  let workW = origW;
-  let workH = origH;
-  if (workW > maxWorkDim || workH > maxWorkDim) {
-    if (workW > workH) {
-      workH = Math.round((workH * maxWorkDim) / workW);
-      workW = maxWorkDim;
-    } else {
-      workW = Math.round((workW * maxWorkDim) / workH);
-      workH = maxWorkDim;
-    }
-  }
+  const ratio = Math.min(1, maxWorkDim / Math.max(origW, origH));
+  const workW = Math.max(1, Math.round(origW * ratio));
+  const workH = Math.max(1, Math.round(origH * ratio));
 
   const canvas = document.createElement('canvas');
   canvas.width = workW;
@@ -332,171 +442,47 @@ export async function convertImageToVector(sourceUrl, options = {}) {
 
   const imageData = ctx.getImageData(0, 0, workW, workH);
   const suitability = evaluateVectorSuitability(imageData, workW, workH);
-  const data = imageData.data;
-  const totalPixels = workW * workH;
 
-  // Sample non-transparent pixels for K-Means++ initialization
-  const samples = [];
-  const sampleStep = Math.max(1, Math.floor(totalPixels / 8000));
-  for (let i = 0; i < totalPixels; i += sampleStep) {
-    const idx = i * 4;
-    if (data[idx + 3] > 40) {
-      samples.push([data[idx], data[idx + 1], data[idx + 2]]);
-    }
-  }
+  const workerSettings = {
+    mode: options.mode || 'auto',
+    removeBackground: !!options.removeBackground,
+    texture: 'clean',
+    quality: 'accurate',
+    geometry: options.geometry !== false,
+    seams: options.seams !== false,
+    detail: options.detail !== false,
+    preprocess: 'auto',
+    colors: numColors,
+    threshold: 128,
+    smooth: options.smooth ?? 2,
+    clean: options.clean ?? 2,
+    noise: minSpeckleArea,
+    removeWhite: false,
+    whiteLevel: 250,
+    corners: options.corners !== false
+  };
 
-  const k = Math.min(numColors, Math.max(2, samples.length));
-  const centroids = [];
-  const stride = Math.max(1, Math.floor(samples.length / k));
-  for (let i = 0; i < k; i++) {
-    centroids.push([...samples[(i * stride) % samples.length]]);
-  }
+  const workerResult = await runVectorWorker(
+    imageData,
+    origW,
+    origH,
+    workerSettings,
+    options.onProgress
+  );
 
-  // Run 5 K-Means iterations with perceptual weights
-  for (let iter = 0; iter < 5; iter++) {
-    const sums = Array.from({ length: k }, () => [0, 0, 0, 0]);
-    for (const [r, g, b] of samples) {
-      let bestDist = Infinity;
-      let bestCluster = 0;
-      for (let c = 0; c < k; c++) {
-        const [cr, cg, cb] = centroids[c];
-        const d = 0.299 * (r - cr) ** 2 + 0.587 * (g - cg) ** 2 + 0.114 * (b - cb) ** 2;
-        if (d < bestDist) {
-          bestDist = d;
-          bestCluster = c;
-        }
-      }
-      sums[bestCluster][0] += r;
-      sums[bestCluster][1] += g;
-      sums[bestCluster][2] += b;
-      sums[bestCluster][3]++;
-    }
-    for (let c = 0; c < k; c++) {
-      if (sums[c][3] > 0) {
-        centroids[c][0] = Math.round(sums[c][0] / sums[c][3]);
-        centroids[c][1] = Math.round(sums[c][1] / sums[c][3]);
-        centroids[c][2] = Math.round(sums[c][2] / sums[c][3]);
-      }
-    }
-  }
+  // Scale SVG artboard to 16 MP Adobe Stock standard & embed Dublin Core RDF metadata
+  const rawSvg = workerResult.svg;
+  const scaledSvg = stockSVG(rawSvg, 1);
+  const svgString = injectSvgMetadata(scaledSvg, metadata);
 
-  // Assign each pixel to nearest centroid
-  let rawLabels = new Int16Array(totalPixels);
-  for (let i = 0; i < totalPixels; i++) {
-    const idx = i * 4;
-    if (data[idx + 3] <= 40) {
-      rawLabels[i] = -1;
-      continue;
-    }
-    const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-    let bestDist = Infinity;
-    let bestCluster = 0;
-    for (let c = 0; c < k; c++) {
-      const [cr, cg, cb] = centroids[c];
-      const d = 0.299 * (r - cr) ** 2 + 0.587 * (g - cg) ** 2 + 0.114 * (b - cb) ** 2;
-      if (d < bestDist) {
-        bestDist = d;
-        bestCluster = c;
-      }
-    }
-    rawLabels[i] = bestCluster;
-  }
+  // Convert 16 MP scaled SVG to PostScript Level 3 EPS
+  const safeTitle = metadata.title || 'Commercial Vector Illustration Asset';
+  const safeKeywords = (metadata.keywords || []).join(', ');
+  const epsString = svgToEPS(stockSVG(rawSvg, 0.75), safeTitle, safeKeywords);
 
-  // Despeckle isolated noise pixels
-  const cleanLabels = despeckleLabelMap(rawLabels, workW, workH, 2);
-
-  const scaleX = origW / workW;
-  const scaleY = origH / workH;
-  const palette = centroids.map(([r, g, b]) => ({
-    r, g, b, hex: rgbToHex(r, g, b)
-  }));
-
-  const layers = [];
-  let totalPaths = 0;
-
-  for (let c = 0; c < k; c++) {
-    const { svgPathData, psPathData, contourCount } = traceColorLayerContours(
-      cleanLabels,
-      workW,
-      workH,
-      c,
-      minSpeckleArea,
-      simplifyEpsilon,
-      scaleX,
-      scaleY
-    );
-    if (svgPathData.length > 0) {
-      layers.push({
-        color: palette[c],
-        svgD: svgPathData,
-        psCmds: psPathData
-      });
-      totalPaths += contourCount;
-    }
-    if (c % 4 === 0) {
-      await new Promise(r => setTimeout(r, 0));
-    }
-  }
-
-  const safeTitle = escapeXml(metadata.title || 'Commercial Vector Illustration Asset');
-  const safeDesc = escapeXml(metadata.description || safeTitle);
-  const safeKeywords = escapeXml((metadata.keywords || []).join(', '));
-
-  // Build clean SVG with Bezier curves & embedded RDF Dublin Core metadata
-  let svgString = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${origW} ${origH}" width="${origW}" height="${origH}">
-  <title>${safeTitle}</title>
-  <desc>${safeDesc}</desc>
-  <metadata>
-    <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/">
-      <rdf:Description>
-        <dc:title>${safeTitle}</dc:title>
-        <dc:description>${safeDesc}</dc:description>
-        <dc:subject>${safeKeywords}</dc:subject>
-      </rdf:Description>
-    </rdf:RDF>
-  </metadata>
-  <g id="adobe-stock-bezier-vector" shape-rendering="geometricPrecision" stroke-linejoin="round">\n`;
-
-  for (const layer of layers) {
-    svgString += `    <path fill="${layer.color.hex}" stroke="${layer.color.hex}" stroke-width="0.45" d="${layer.svgD.trim()}" />\n`;
-  }
-  svgString += `  </g>\n</svg>`;
-
-  // Build Adobe Illustrator-compatible PostScript Level 3 EPS
-  let epsString = `%!PS-Adobe-3.0 EPSF-3.0
-%%Creator: Microstock Adobe Helper Pro - Smooth Bezier Vectorizer
-%%Title: ${safeTitle}
-%%For: Adobe Stock Contributor
-%%BoundingBox: 0 0 ${origW} ${origH}
-%%HiResBoundingBox: 0.0 0.0 ${origW}.0 ${origH}.0
-%%Pages: 1
-%%DocumentData: Clean7Bit
-%%LanguageLevel: 3
-%%Keywords: ${safeKeywords}
-%%EndComments
-%%BeginProlog
-/m {moveto} bind def
-/l {lineto} bind def
-/c {curveto} bind def
-/cp {closepath} bind def
-/f {fill} bind def
-/rgb {setrgbcolor} bind def
-%%EndProlog
-%%Page: 1 1
-gsave
-0 ${origH} translate
-1 -1 scale
-`;
-
-  for (const layer of layers) {
-    const r = (layer.color.r / 255).toFixed(3);
-    const g = (layer.color.g / 255).toFixed(3);
-    const b = (layer.color.b / 255).toFixed(3);
-    epsString += `${r} ${g} ${b} rgb\nnewpath\n${layer.psCmds}f\n`;
-  }
-
-  epsString += `grestore\nshowpage\n%%EOF\n`;
+  const pathCount = (svgString.match(/<path\b/g) || []).length;
+  const fillMatches = svgString.match(/\bfill="([^"]+)"/g) || [];
+  const colorCount = new Set(fillMatches.filter(f => !f.includes('none'))).size || 1;
 
   const svgBlob = new Blob([svgString], { type: 'image/svg+xml' });
   const epsBlob = new Blob([epsString], { type: 'application/postscript' });
@@ -508,9 +494,10 @@ gsave
     epsBlob,
     svgUrl: URL.createObjectURL(svgBlob),
     epsUrl: URL.createObjectURL(epsBlob),
-    pathCount: totalPaths,
-    colorCount: layers.length,
+    pathCount,
+    colorCount,
+    engine: workerResult.engine || 'Hybrid Potrace',
+    defects: workerResult.defects || null,
     suitability
   };
 }
-

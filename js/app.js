@@ -323,37 +323,8 @@ function populateCategoryDropdown() {
   ).join('');
 }
 
-function refreshStatsAndGrid() {
-  const total = state.items.length;
-  const ready = state.items.filter(it => {
-    const mp = it.upscaledMegapixels || it.originalMegapixels || 0;
-    const hasMeta = it.metadata && it.metadata.title && (it.metadata.keywords?.length || 0) >= 25;
-    return mp >= 4.0 && hasMeta && (it.audit?.score || 0) >= 80;
-  }).length;
-  const needUpscale = state.items.filter(it => (it.upscaledMegapixels || it.originalMegapixels || 0) < 4.0).length;
-  const vectorized = state.items.filter(it => it.isVectorized).length;
-
-  document.getElementById('statTotalCount').textContent = total;
-  document.getElementById('statReadyCount').textContent = ready;
-  document.getElementById('statNeedUpscaleCount').textContent = needUpscale;
-  document.getElementById('statVectorCount').textContent = vectorized;
-  document.getElementById('queueCounterBadge').textContent = `${total} / 100`;
-
-  const emptyState = document.getElementById('emptyQueueState');
-  const grid = document.getElementById('assetsGrid');
-
-  if (total === 0) {
-    emptyState.classList.remove('d-none');
-    grid.classList.add('d-none');
-    grid.innerHTML = '';
-    return;
-  }
-
-  emptyState.classList.add('d-none');
-  grid.classList.remove('d-none');
-
-  // Filter items
-  const filtered = state.items.filter(it => {
+function getFilteredItems() {
+  return state.items.filter(it => {
     const mp = it.upscaledMegapixels || it.originalMegapixels || 0;
     const hasMeta = it.metadata && it.metadata.title && (it.metadata.keywords?.length || 0) >= 25;
     if (state.activeFilter === 'ready' && !(mp >= 4.0 && hasMeta)) return false;
@@ -370,6 +341,54 @@ function refreshStatsAndGrid() {
     }
     return true;
   });
+}
+
+function getNavigableItems() {
+  const filtered = getFilteredItems();
+  if (filtered.length > 1 && filtered.some(it => String(it.id) === String(state.activeItemId))) {
+    return filtered;
+  }
+  if (state.items && state.items.length > 0) {
+    return state.items;
+  }
+  return filtered;
+}
+
+function refreshStatsAndGrid() {
+  const total = state.items.length;
+  const ready = state.items.filter(it => {
+    const mp = it.upscaledMegapixels || it.originalMegapixels || 0;
+    const hasMeta = it.metadata && it.metadata.title && (it.metadata.keywords?.length || 0) >= 25;
+    return mp >= 4.0 && hasMeta && (it.audit?.score || 0) >= 80;
+  }).length;
+  const needUpscale = state.items.filter(it => (it.upscaledMegapixels || it.originalMegapixels || 0) < 4.0).length;
+  const vectorized = state.items.filter(it => it.isVectorized).length;
+
+  document.getElementById('statTotalCount').textContent = total;
+  document.getElementById('statReadyCount').textContent = ready;
+  document.getElementById('statNeedUpscaleCount').textContent = needUpscale;
+  document.getElementById('statVectorCount').textContent = vectorized;
+  document.getElementById('queueCounterBadge').textContent = `${total} / 100`;
+
+  if (state.activeItemId) {
+    updateModalNavButtons();
+  }
+
+  const emptyState = document.getElementById('emptyQueueState');
+  const grid = document.getElementById('assetsGrid');
+
+  if (total === 0) {
+    emptyState.classList.remove('d-none');
+    grid.classList.add('d-none');
+    grid.innerHTML = '';
+    return;
+  }
+
+  emptyState.classList.add('d-none');
+  grid.classList.remove('d-none');
+
+  // Filter items
+  const filtered = getFilteredItems();
 
   if (filtered.length === 0) {
     grid.innerHTML = `
@@ -448,6 +467,24 @@ function refreshStatsAndGrid() {
                 `}
               </div>
             </div>
+
+            ${item.isVectorized ? `
+              <div class="p-2 rounded-2 bg-light-primary border border-primary-subtle d-flex align-items-center justify-content-between gap-2">
+                <div class="min-w-0 d-flex align-items-center gap-1">
+                  <i class="bi bi-vector-pen text-primary"></i>
+                  <span class="small fw-semibold text-navy text-truncate" style="font-size:0.75rem;">Vector Siap</span>
+                  <span class="text-muted font-monospace d-none d-sm-inline" style="font-size:0.7rem;">(${item.vectorPathCount || 0} kurva)</span>
+                </div>
+                <div class="d-flex gap-1 flex-shrink-0">
+                  <button type="button" class="btn btn-sm btn-dark py-1 px-2 d-flex align-items-center gap-1 font-monospace" data-action="download-svg" data-id="${item.id}" title="Unduh File Vector .SVG" style="font-size:0.75rem;">
+                    <i class="bi bi-download"></i>SVG
+                  </button>
+                  <button type="button" class="btn btn-sm btn-outline-dark bg-white py-1 px-2 d-flex align-items-center gap-1 font-monospace" data-action="download-eps" data-id="${item.id}" title="Unduh File Vector .EPS" style="font-size:0.75rem;">
+                    <i class="bi bi-download"></i>EPS
+                  </button>
+                </div>
+              </div>
+            ` : ''}
 
             <div class="pt-2 border-top d-flex align-items-center justify-content-between gap-1 flex-wrap">
               <div class="d-flex gap-1 flex-wrap">
@@ -738,6 +775,54 @@ async function runSingleSplitFour(item) {
   }
 }
 
+function downloadSvgAsset(item) {
+  if (!item) return;
+  if (!item.svgUrl) {
+    if (item.svgBlob) {
+      item.svgUrl = URL.createObjectURL(item.svgBlob);
+    } else if (item.svgString) {
+      item.svgBlob = new Blob([item.svgString], { type: 'image/svg+xml;charset=utf-8' });
+      item.svgUrl = URL.createObjectURL(item.svgBlob);
+    }
+  }
+  if (!item.svgUrl) {
+    showToast('Vector Belum Siap', 'File SVG belum dibuat untuk gambar ini.', 'warning');
+    return;
+  }
+  const base = item.name.replace(/\.[^/.]+$/, '');
+  const a = document.createElement('a');
+  a.href = item.svgUrl;
+  a.download = `${base}_vector.svg`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  showToast('Download .SVG', `${base}_vector.svg berhasil diunduh.`, 'success');
+}
+
+function downloadEpsAsset(item) {
+  if (!item) return;
+  if (!item.epsUrl) {
+    if (item.epsBlob) {
+      item.epsUrl = URL.createObjectURL(item.epsBlob);
+    } else if (item.epsString) {
+      item.epsBlob = new Blob([item.epsString], { type: 'application/postscript' });
+      item.epsUrl = URL.createObjectURL(item.epsBlob);
+    }
+  }
+  if (!item.epsUrl) {
+    showToast('Vector Belum Siap', 'File EPS belum dibuat untuk gambar ini.', 'warning');
+    return;
+  }
+  const base = item.name.replace(/\.[^/.]+$/, '');
+  const a = document.createElement('a');
+  a.href = item.epsUrl;
+  a.download = `${base}_vector.eps`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  showToast('Download .EPS', `${base}_vector.eps berhasil diunduh.`, 'success');
+}
+
 async function downloadSingleAsset(item, embedXmp = true) {
   try {
     let blob = item.upscaledBlob || item.isolatedBlob || item.file;
@@ -800,14 +885,84 @@ async function runBatchQueue(itemsToProcess, workerFn, labelText) {
 }
 
 /**
- * Inspect & Metadata Modal Rendering
+ * Inspect & Metadata Modal Rendering & Navigation
  */
+function resetZoom() {
+  state.compareZoom = 1;
+  document.querySelectorAll('#zoomBtnGroup button').forEach(b => {
+    b.classList.toggle('active', b.dataset.zoom === '1');
+  });
+  const beforeImg = document.getElementById('compareBeforeImg');
+  const afterImg = document.getElementById('compareAfterImg');
+  if (beforeImg) beforeImg.style.transform = 'scale(1)';
+  if (afterImg) afterImg.style.transform = 'scale(1)';
+  const compareClip = document.getElementById('compareClip');
+  if (compareClip) compareClip.style.width = '50%';
+  const compareStage = document.getElementById('compareStage');
+  const compareBeforeInner = document.getElementById('compareBeforeInner');
+  if (compareStage && compareBeforeInner && compareStage.offsetWidth > 0) {
+    compareBeforeInner.style.width = `${compareStage.offsetWidth}px`;
+  }
+}
+
+function updateModalNavButtons() {
+  const items = getNavigableItems();
+  const index = items.findIndex(i => String(i.id) === String(state.activeItemId));
+  const total = items.length;
+
+  const counterText = total > 0 && index !== -1 ? `${index + 1} / ${total}` : (total > 0 ? `1 / ${total}` : '0 / 0');
+  const counterEl = document.getElementById('modalAssetCounter');
+  if (counterEl) counterEl.textContent = counterText;
+
+  const hasMultiple = total > 1;
+
+  const btnPrev = document.getElementById('btnModalPrev');
+  const btnNext = document.getElementById('btnModalNext');
+  if (btnPrev) btnPrev.disabled = !hasMultiple;
+  if (btnNext) btnNext.disabled = !hasMultiple;
+
+  const btnStagePrev = document.getElementById('btnStagePrev');
+  const btnStageNext = document.getElementById('btnStageNext');
+  if (btnStagePrev) btnStagePrev.disabled = !hasMultiple;
+  if (btnStageNext) btnStageNext.disabled = !hasMultiple;
+}
+
+function navigateInspectModal(direction) {
+  if (!state.activeItemId && state.items.length > 0) {
+    state.activeItemId = state.items[0].id;
+  }
+  if (!state.activeItemId) return;
+
+  syncActiveModalMetadata();
+  const items = getNavigableItems();
+  if (items.length <= 1) return;
+
+  let currentIndex = items.findIndex(i => String(i.id) === String(state.activeItemId));
+  if (currentIndex === -1) currentIndex = 0;
+
+  let targetIndex = currentIndex + direction;
+  // Circular wrap-around navigation
+  if (targetIndex < 0) {
+    targetIndex = items.length - 1;
+  } else if (targetIndex >= items.length) {
+    targetIndex = 0;
+  }
+
+  const nextItem = items[targetIndex];
+  if (nextItem) {
+    state.activeItemId = nextItem.id;
+    state.compareViewMode = nextItem.isVectorized && !nextItem.upscaledUrl ? 'vector' : 'raster';
+    resetZoom();
+    renderInspectModal(nextItem);
+  }
+}
+
 function openInspectModal(itemId) {
   const item = state.items.find(i => i.id === itemId);
   if (!item) return;
   state.activeItemId = item.id;
   state.compareViewMode = item.isVectorized && !item.upscaledUrl ? 'vector' : 'raster';
-  state.compareZoom = 1;
+  resetZoom();
   renderInspectModal(item);
   inspectModalInstance?.show();
 }
@@ -903,6 +1058,7 @@ function renderInspectModal(item) {
 
   updateCharCounters(meta.title || '', meta.description || '');
   renderKeywordPills(meta.keywords || []);
+  updateModalNavButtons();
 }
 
 function updateCharCounters(title, desc) {
@@ -1522,6 +1678,8 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (action === 'vector') runSingleVectorize(item);
     else if (action === 'split4') runSingleSplitFour(item);
     else if (action === 'download') downloadSingleAsset(item, true);
+    else if (action === 'download-svg') downloadSvgAsset(item);
+    else if (action === 'download-eps') downloadEpsAsset(item);
     else if (action === 'remove') {
       state.items = state.items.filter(i => i.id !== id);
       deleteItemFromDb(id);
@@ -1562,6 +1720,83 @@ document.addEventListener('DOMContentLoaded', () => {
   }, { passive: true });
   window.addEventListener('touchend', () => {
     isSliding = false;
+  });
+
+  // Inspect Modal Navigation Buttons (Header & Stage Overlay)
+  const btnModalPrev = document.getElementById('btnModalPrev');
+  const btnModalNext = document.getElementById('btnModalNext');
+  const btnStagePrev = document.getElementById('btnStagePrev');
+  const btnStageNext = document.getElementById('btnStageNext');
+
+  if (btnModalPrev) {
+    btnModalPrev.addEventListener('click', () => navigateInspectModal(-1));
+  }
+  if (btnModalNext) {
+    btnModalNext.addEventListener('click', () => navigateInspectModal(1));
+  }
+  if (btnStagePrev) {
+    btnStagePrev.addEventListener('click', e => {
+      e.stopPropagation();
+      navigateInspectModal(-1);
+    });
+    ['mousedown', 'touchstart', 'pointerdown'].forEach(evt => {
+      btnStagePrev.addEventListener(evt, e => e.stopPropagation());
+    });
+  }
+  if (btnStageNext) {
+    btnStageNext.addEventListener('click', e => {
+      e.stopPropagation();
+      navigateInspectModal(1);
+    });
+    ['mousedown', 'touchstart', 'pointerdown'].forEach(evt => {
+      btnStageNext.addEventListener(evt, e => e.stopPropagation());
+    });
+  }
+
+  // Keyboard navigation for inspect modal (Left & Right Arrow keys)
+  window.addEventListener('keydown', e => {
+    const inspectModalEl = document.getElementById('inspectModal');
+    if (!inspectModalEl || !inspectModalEl.classList.contains('show')) return;
+
+    const activeEl = document.activeElement;
+    const isInput = activeEl && (
+      activeEl.tagName === 'INPUT' ||
+      activeEl.tagName === 'TEXTAREA' ||
+      activeEl.tagName === 'SELECT' ||
+      activeEl.isContentEditable
+    );
+    if (isInput) return;
+
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      navigateInspectModal(-1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      navigateInspectModal(1);
+    }
+  });
+
+  const inspectModalEl = document.getElementById('inspectModal');
+  if (inspectModalEl) {
+    inspectModalEl.addEventListener('shown.bs.modal', () => {
+      const cStage = document.getElementById('compareStage');
+      const cBefore = document.getElementById('compareBeforeInner');
+      if (cStage && cBefore) {
+        cBefore.style.width = `${cStage.offsetWidth}px`;
+      }
+    });
+    inspectModalEl.addEventListener('hidden.bs.modal', () => {
+      syncActiveModalMetadata();
+      resetZoom();
+    });
+  }
+
+  window.addEventListener('resize', () => {
+    const cStage = document.getElementById('compareStage');
+    const cBefore = document.getElementById('compareBeforeInner');
+    if (cStage && cBefore && cStage.offsetWidth > 0) {
+      cBefore.style.width = `${cStage.offsetWidth}px`;
+    }
   });
 
   // Inspect Modal View Mode & Zoom
@@ -1638,23 +1873,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btnDownloadSvg').addEventListener('click', () => {
-    const item = state.items.find(i => i.id === state.activeItemId);
-    if (!item?.svgBlob) return;
-    const base = item.name.replace(/\.[^/.]+$/, '');
-    const a = document.createElement('a');
-    a.href = item.svgUrl;
-    a.download = `${base}_vector.svg`;
-    a.click();
+    const item = state.items.find(i => String(i.id) === String(state.activeItemId));
+    if (item) downloadSvgAsset(item);
   });
 
   document.getElementById('btnDownloadEps').addEventListener('click', () => {
-    const item = state.items.find(i => i.id === state.activeItemId);
-    if (!item?.epsBlob) return;
-    const base = item.name.replace(/\.[^/.]+$/, '');
-    const a = document.createElement('a');
-    a.href = item.epsUrl;
-    a.download = `${base}_vector.eps`;
-    a.click();
+    const item = state.items.find(i => String(i.id) === String(state.activeItemId));
+    if (item) downloadEpsAsset(item);
   });
 
   // Metadata Live Editing in Modal

@@ -374,6 +374,73 @@ body {
   border-right: 2px solid var(--brand-primary);
 }
 
+/* Stage Navigation Floating Arrows */
+.stage-nav-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(17, 24, 39, 0.88);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1.5px solid rgba(255, 255, 255, 0.5);
+  color: #ffffff !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 35;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  padding: 0;
+  user-select: none;
+}
+
+.stage-nav-arrow:hover:not(:disabled) {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: #ffffff !important;
+  transform: translateY(-50%) scale(1.12);
+  box-shadow: 0 6px 20px rgba(17, 177, 137, 0.6);
+}
+
+.stage-nav-arrow:active:not(:disabled) {
+  transform: translateY(-50%) scale(0.95);
+}
+
+.stage-nav-arrow:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.stage-nav-prev {
+  left: 14px;
+}
+
+.stage-nav-next {
+  right: 14px;
+}
+
+@media (max-width: 575.98px) {
+  .stage-nav-arrow {
+    width: 34px;
+    height: 34px;
+  }
+  .stage-nav-arrow svg {
+    width: 18px;
+    height: 18px;
+  }
+  .stage-nav-prev {
+    left: 8px;
+  }
+  .stage-nav-next {
+    right: 8px;
+  }
+}
+
 /* Keyword Tag Pills */
 .kw-pill {
   display: inline-flex;

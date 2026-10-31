@@ -503,9 +503,36 @@
                   </button>
                 </div>
                 <div class="col-12">
-                  <button type="button" id="btnModalSplit4" class="btn btn-sm btn-outline-dark w-100 py-2">
-                    Pecah Grid 2x2 Jadi 4 Gambar Terpisah
-                  </button>
+                  <div class="p-2.5 rounded-2 border bg-light">
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                      <span class="small fw-semibold text-navy"><i class="bi bi-grid-3x3 me-1 text-primary"></i>Pecah Grid Gambar</span>
+                      <span class="text-muted" style="font-size:0.75rem;">Potong otomatis &amp; rapi ke antrean</span>
+                    </div>
+                    <div class="row g-2">
+                      <div class="col-6 col-sm-3">
+                        <button type="button" id="btnModalSplit2x2" class="btn btn-sm btn-outline-dark bg-white w-100 py-1.5 px-2 text-nowrap" title="Pecah Grid 2×2 (4 Gambar)">
+                          <i class="bi bi-grid me-1 text-primary"></i><strong>2×2</strong> (4)
+                        </button>
+                      </div>
+                      <div class="col-6 col-sm-3">
+                        <button type="button" id="btnModalSplit3x3" class="btn btn-sm btn-outline-dark bg-white w-100 py-1.5 px-2 text-nowrap" title="Pecah Grid 3×3 (9 Gambar)">
+                          <i class="bi bi-grid-3x3-gap me-1 text-primary"></i><strong>3×3</strong> (9)
+                        </button>
+                      </div>
+                      <div class="col-6 col-sm-3">
+                        <button type="button" id="btnModalSplit2x3" class="btn btn-sm btn-outline-dark bg-white w-100 py-1.5 px-2 text-nowrap" title="Pecah Grid 2 kolom × 3 baris (6 Gambar)">
+                          <i class="bi bi-columns me-1 text-primary"></i><strong>2×3</strong> (6)
+                        </button>
+                      </div>
+                      <div class="col-6 col-sm-3">
+                        <button type="button" id="btnModalSplit3x2" class="btn btn-sm btn-outline-dark bg-white w-100 py-1.5 px-2 text-nowrap" title="Pecah Grid 3 kolom × 2 baris (6 Gambar)">
+                          <i class="bi bi-layout-three-columns me-1 text-primary"></i><strong>3×2</strong> (6)
+                        </button>
+                      </div>
+                    </div>
+                    <!-- Hidden button for backward compatibility -->
+                    <button type="button" id="btnModalSplit4" class="d-none"></button>
+                  </div>
                 </div>
               </div>
 
@@ -699,6 +726,34 @@
               <div class="col-4">
                 <button type="button" class="preset-btn text-center" data-agency="freepik">
                   <div class="fw-bold text-navy small">Freepik</div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Target Format CSV -->
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <label class="small fw-semibold text-navy mb-0">Format Target di CSV</label>
+              <span class="text-muted" style="font-size:0.75rem;">Ekstensi kolom Filename</span>
+            </div>
+            <div class="row g-2" id="exportCsvFormatGroup">
+              <div class="col-4">
+                <button type="button" class="preset-btn active text-center py-2 px-1" data-csv-format="raster" title="Format Raster JPG / PNG">
+                  <div class="fw-bold text-navy small"><i class="bi bi-file-earmark-image me-1 text-primary"></i>JPG / PNG</div>
+                  <div class="text-muted text-truncate" style="font-size:0.68rem;">..._stock.jpg</div>
+                </button>
+              </div>
+              <div class="col-4">
+                <button type="button" class="preset-btn text-center py-2 px-1" data-csv-format="svg" title="Format Vector SVG">
+                  <div class="fw-bold text-navy small"><i class="bi bi-filetype-svg me-1 text-primary"></i>SVG</div>
+                  <div class="text-muted text-truncate" style="font-size:0.68rem;">..._vector.svg</div>
+                </button>
+              </div>
+              <div class="col-4">
+                <button type="button" class="preset-btn text-center py-2 px-1" data-csv-format="eps" title="Format Vector EPS">
+                  <div class="fw-bold text-navy small"><i class="bi bi-file-earmark-code me-1 text-primary"></i>EPS</div>
+                  <div class="text-muted text-truncate" style="font-size:0.68rem;">..._vector.eps</div>
                 </button>
               </div>
             </div>

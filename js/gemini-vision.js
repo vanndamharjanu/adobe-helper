@@ -64,9 +64,9 @@ export async function createVisionThumbnailBase64(imageItem, maxDim = 800) {
 }
 
 /**
- * Scrubs banned trademarks & spam terms from a title and enforces 50-70 char commercial length
+ * Scrubs banned trademarks & spam terms from a title and enforces max commercial length (default 130 chars)
  */
-export function sanitizeAdobeTitle(rawTitle = '') {
+export function sanitizeAdobeTitle(rawTitle = '', maxLen = 130) {
   let title = String(rawTitle || '').trim();
   for (const term of [...BANNED_BRANDS, ...BANNED_BUZZWORDS]) {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -74,8 +74,12 @@ export function sanitizeAdobeTitle(rawTitle = '') {
   }
   title = title
     .replace(/["'“”‘’`]/g, '')
-    .replace(/\s*[,;:|/\\]+\s*/g, ' ')
+    .replace(/\s*[;:|/\\]+\s*/g, ' ')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/(,\s*){2,}/g, ', ')
     .replace(/\s+/g, ' ')
+    .replace(/^[,\s]+/, '')
+    .replace(/(?:,\s*|\s+(?:in|on|at|with|for|and|or|of|the|a|an|to|by))+$/gi, '')
     .replace(/\.\s*$/, '')
     .trim();
 
@@ -83,12 +87,19 @@ export function sanitizeAdobeTitle(rawTitle = '') {
     title = title.charAt(0).toUpperCase() + title.slice(1);
   }
 
-  // Truncate cleanly at word boundary if > 75 chars
-  if (title.length > 75) {
-    const sub = title.substring(0, 72);
-    const lastSpace = sub.lastIndexOf(' ');
-    title = lastSpace > 45 ? sub.substring(0, lastSpace).trim() : sub.trim();
-    title = title.replace(/\s+(in|on|at|with|for|and|or|of|the|a|an|to|by)$/i, '').trim();
+  // Truncate cleanly at word/comma boundary if exceeding maxLen
+  if (title.length > maxLen) {
+    const sub = title.substring(0, maxLen);
+    const nextChar = title.charAt(maxLen);
+    if (nextChar && !/[\s,]/.test(nextChar)) {
+      const lastSpace = sub.lastIndexOf(' ');
+      title = lastSpace > 45 ? sub.substring(0, lastSpace).trim() : sub.trim();
+    } else {
+      title = sub.trim();
+    }
+    title = title
+      .replace(/(?:,\s*|\s+(?:in|on|at|with|for|and|or|of|the|a|an|to|by))+$/gi, '')
+      .trim();
   }
 
   return title;
@@ -198,13 +209,27 @@ export async function analyzeImageWithGemini(imageItem, settings = {}) {
 
   const categoryNames = ADOBE_CATEGORIES.map(c => c.name).join(', ');
 
+  const styleHintMap = {
+    'ai-photo': 'Prefer photographic or 3D render style labels (e.g., Commercial Stock Photo, Minimalist 3D Render) if visually accurate.',
+    'ai-illustration': 'Prefer digital illustration style labels (e.g., Cartoon Illustration, Digital Vector Art) if visually accurate.',
+    'ai-vector': 'Prefer vector/icon/sticker style labels (e.g., Flat Vector Icon, Flat Vector Sticker, Vector Mascot) if visually accurate.'
+  };
+  const styleHint = styleHintMap[assetStyle] || '';
+
   const systemPrompt = `You are a Senior Adobe Stock Contributor & Microstock SEO Curator.
 Analyze the attached image visually with 100% accuracy. DO NOT guess from filenames.
 
 CRITICAL ADOBE STOCK ANTI-REJECTION RULES:
-1. TITLE:
-   - Write a natural, descriptive English commercial title between 50 and 70 characters.
-   - Describe the exact visual subject, action/setting, style, and lighting/mood.
+1. TITLE (TARGET 90–125 CHARACTERS, STRICTLY MAX 130 CHARACTERS):
+   - Follow this exact 3-part commercial formula:
+     [Specific Object & Action] + [Visual Style] + for [2-3 Buyer Solutions / Use Cases]
+   - Part 1 [Specific Object & Action]: Exact visual subject, pose, expression, or state (e.g. "Fresh Papaya Half Slice with Seeds", "Cool Banana Mascot Wearing Sunglasses").
+   - Part 2 [Visual Style]: Crisp medium/style label without redundancy (e.g. "Flat Vector Icon", "Flat Vector Stickers", "Cartoon Vector Mascot", "Minimalist 3D Render", "Commercial Studio Photo"). ${styleHint}
+   - Part 3 [Buyer Solutions / Use Cases]: End with "for <2-3 specific commercial buyer applications>" separated by commas (e.g. "for Healthy Menu, Smoothie Recipe, and Grocery App").
+   - Reference examples (for structure only — NEVER copy unrelated subjects):
+     * "Fresh Papaya Half Slice with Seeds Flat Vector Icon for Healthy Menu, Smoothie Recipe, and Grocery App"
+     * "Tropical Fruit App Icons Set Flat Vector Stickers for Mobile UI, Healthy Food Menu, and Diet Tracker"
+   - Keep total length strictly <= 130 characters (ideal 100–130 characters) so all 3 parts stay complete without truncation.
    - NEVER include brand names/trademarks (Apple, Nike, Sony, Disney, etc.).
    - NEVER include camera specs or AI spam words (4K, 8K, DSLR, photorealistic, hyperrealistic, masterpiece, wallpaper, Midjourney, AI generated).
 2. DESCRIPTION:
@@ -317,7 +342,7 @@ ${customHint ? `\nUSER CONTEXT / FOCUS HINT: "${customHint}" (incorporate only i
 
         return {
           title: cleanTitle,
-          description: sanitizeAdobeTitle(parsed.description || cleanTitle),
+          description: sanitizeAdobeTitle(parsed.description || cleanTitle, 200),
           keywords: cleanKeywords,
           category: matchedCat,
           isAiGenerated: true,
@@ -538,18 +563,25 @@ export function auditAdobeCompliance(item) {
   }
 
   const title = meta.title.trim();
-  if (title.length < 35) {
+  if (title.length < 55) {
     issues.push({
       severity: 'warning',
       code: 'TITLE_SHORT',
-      message: `Judul terlalu pendek (${title.length} karakter). Standar SEO Adobe Stock: 50–70 karakter.`
+      message: `Judul terlalu pendek (${title.length} karakter). Target strategi [Objek + Gaya + Solusi]: 80–130 karakter.`
     });
     score -= 10;
-  } else if (title.length > 85) {
+  } else if (title.length > 200) {
+    issues.push({
+      severity: 'error',
+      code: 'TITLE_EXCEEDS_LIMIT',
+      message: `Judul (${title.length} karakter) melebihi batas maksimal Adobe Stock (200 karakter).`
+    });
+    score -= 25;
+  } else if (title.length > 130) {
     issues.push({
       severity: 'warning',
       code: 'TITLE_LONG',
-      message: `Judul terlalu panjang (${title.length} karakter). Optimal: 50–70 karakter.`
+      message: `Judul melebihi batas ideal (${title.length}/130 karakter). Usahakan maks. 130 karakter.`
     });
     score -= 5;
   }

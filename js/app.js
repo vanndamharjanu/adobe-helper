@@ -1083,8 +1083,9 @@ function updateCharCounters(title, desc) {
   const tLen = (title || '').length;
   const dLen = (desc || '').length;
   const tEl = document.getElementById('modalTitleCharCount');
-  tEl.textContent = `${tLen} / 70`;
-  tEl.className = `font-monospace small ${tLen >= 50 && tLen <= 72 ? 'text-primary fw-bold' : 'text-muted'}`;
+  tEl.textContent = `${tLen} / 130`;
+  const cls = tLen > 130 ? 'text-danger fw-bold' : (tLen >= 75 ? 'text-primary fw-bold' : 'text-muted');
+  tEl.className = `font-monospace small ${cls}`;
   document.getElementById('modalDescCharCount').textContent = `${dLen} / 200`;
 }
 
@@ -1177,7 +1178,7 @@ async function loadAiSampleAssets() {
         ctx.fill();
       },
       meta: {
-        title: 'Minimalist Geometric Owl Mascot Logo Emblem Illustration on White',
+        title: 'Geometric Owl Mascot Head Emblem Flat Vector Logo for Tech Startup Branding, App Icon, and Esports Team',
         description: 'Flat vector style geometric owl emblem icon with bold symmetry and vibrant warm orange palette for modern branding.',
         keywords: ['owl', 'logo', 'geometric', 'mascot', 'illustration', 'vector', 'emblem', 'bird', 'icon', 'minimalist', 'flat design', 'symbol', 'wildlife', 'wisdom', 'badge', 'modern', 'graphic', 'orange', 'branding', 'identity', 'clipart', 'sticker', 'isolated', 'animal', 'abstract', 'creative', 'head', 'character', 'sign', 'symmetric', 'art', 'clean'],
         category: 'Graphic Resources',
@@ -1211,7 +1212,7 @@ async function loadAiSampleAssets() {
         ctx.fill();
       },
       meta: {
-        title: 'Minimalist Pastel 3D Cylinder Product Podium Stage in Soft Daylight',
+        title: 'Pastel 3D Cylinder Product Podium Stage Soft Studio Render for Skincare Ad, Cosmetic Mockup, and Banner',
         description: 'Clean contemporary 3D studio pedestal display platform with pastel gradient background and copy space for cosmetic advertising.',
         keywords: ['podium', 'pedestal', 'stage', 'product display', 'minimalist', 'pastel', 'background', '3d illustration', 'cylinder', 'platform', 'cosmetic', 'studio', 'showcase', 'stand', 'empty', 'copy space', 'modern', 'presentation', 'abstract', 'architecture', 'clean', 'light', 'luxury', 'mockup', 'advertising', 'commercial', 'geometric', 'soft', 'pink', 'beige', 'template', 'interior'],
         category: 'Graphic Resources',
@@ -1249,7 +1250,7 @@ async function loadAiSampleAssets() {
         }
       },
       meta: {
-        title: 'Futuristic Sustainable Green Smart City Skyline with Lush Nature',
+        title: 'Sustainable Green Smart City Skyline with Eco Towers Digital Art for ESG Report, Clean Energy, and Web',
         description: 'Eco friendly futuristic urban architecture integrated with green hills and clean renewable energy under bright blue sky.',
         keywords: ['smart city', 'sustainable', 'eco friendly', 'futuristic', 'green energy', 'architecture', 'environment', 'ecology', 'urban', 'nature', 'innovation', 'clean energy', 'skyline', 'building', 'future', 'landscape', 'sustainability', 'technology', 'modern', 'renewable', 'solar', 'harmony', 'metropolis', 'concept', 'utopia', 'green', 'sky', 'outdoor', 'development', 'planet', 'climate'],
         category: 'The Environment',

@@ -207,14 +207,24 @@ export async function embedMetadataIntoBlob(blob, metadata) {
   return embedXmpInJpeg(blob, metadata);
 }
 
-function escapeCsvCell(val) {
-  if (val == null) return '""';
+function escapeCsvCell(val, forceQuote = false) {
+  if (val == null || val === '') return '';
   const str = String(val).replace(/\r?\n/g, ' ').trim();
-  return `"${str.replace(/"/g, '""')}"`;
+  // Hanya beri tanda petik jika mengandung koma, petik ganda, atau jika dipaksa (misal kumpulan keywords)
+  if (forceQuote || /[",;\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
 }
 
-export function getExportFilename(item) {
+export function getExportFilename(item, targetFormat = 'raster') {
   const baseName = (item.name || 'image').replace(/\.[^/.]+$/, '');
+  if (targetFormat === 'svg') {
+    return `${baseName}_vector.svg`;
+  }
+  if (targetFormat === 'eps') {
+    return `${baseName}_vector.eps`;
+  }
   const blob = item.upscaledBlob || item.isolatedBlob || item.file;
   let ext = item.exportExt;
   if (!ext) {
@@ -225,7 +235,7 @@ export function getExportFilename(item) {
   return `${baseName}_adobe_stock${ext}`;
 }
 
-export function generateAgencyCsv(items, agency = 'adobe') {
+export function generateAgencyCsv(items, agency = 'adobe', targetFormat = 'raster') {
   const rows = [];
   if (agency === 'adobe') {
     rows.push(['Filename', 'Title', 'Keywords', 'Category', 'Releases'].join(','));
@@ -234,14 +244,16 @@ export function generateAgencyCsv(items, agency = 'adobe') {
       const catObj = ADOBE_CATEGORIES.find(
         c => c.name.toLowerCase() === (meta.category || '').toLowerCase()
       ) || { id: 8, name: 'Graphic Resources' };
-      const filename = getExportFilename(item);
+      const filename = getExportFilename(item, targetFormat);
       const title = meta.title || '';
       const keywords = (meta.keywords || []).slice(0, 49).join(', ');
-      const release = meta.fictionalPeople ? 'Fictional People/Property (Generative AI)' : '';
+      // Di Adobe Stock, kolom Releases hanya diisi jika ada dokumen rilis yang di-upload (misal model_release.jpg)
+      // Jika tidak ada / gambar AI / vektor / ilustrasi, kolom ini WAJIB kosong
+      const release = meta.releaseFileName || '';
       rows.push([
         escapeCsvCell(filename),
         escapeCsvCell(title),
-        escapeCsvCell(keywords),
+        escapeCsvCell(keywords, true),
         escapeCsvCell(catObj.id),
         escapeCsvCell(release)
       ].join(','));
@@ -250,7 +262,7 @@ export function generateAgencyCsv(items, agency = 'adobe') {
     rows.push(['Filename', 'Description', 'Keywords', 'Categories', 'Editorial', 'Mature content', 'Illustration'].join(','));
     for (const item of items) {
       const meta = item.metadata || {};
-      const filename = getExportFilename(item);
+      const filename = getExportFilename(item, targetFormat);
       rows.push([
         escapeCsvCell(filename),
         escapeCsvCell(meta.description || meta.title || ''),
@@ -265,7 +277,7 @@ export function generateAgencyCsv(items, agency = 'adobe') {
     rows.push(['Filename', 'Title', 'Keywords', 'Prompt', 'Model'].join(','));
     for (const item of items) {
       const meta = item.metadata || {};
-      const filename = getExportFilename(item);
+      const filename = getExportFilename(item, targetFormat);
       rows.push([
         escapeCsvCell(filename),
         escapeCsvCell(meta.title || ''),

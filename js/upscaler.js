@@ -487,11 +487,15 @@ export async function isolateSubjectBackground(sourceUrl, options = {}) {
 }
 
 /**
- * Smart 2x2 Grid Splitter & Auto-Centering Cropper
- * Automatically finds the clean gutter between 4 icons/illustrations (or 2x2 photo grid),
- * crops each of the 4 objects, and centers isolated icons on a clean padded canvas.
+ * Smart Grid Splitter & Auto-Centering Cropper
+ * Supports 2x2, 3x3, 2x3, 3x2, or custom NxM grids.
+ * Automatically finds clean gutters between icons/illustrations (or photo grids),
+ * detects tight bounding boxes, and centers isolated icons on a clean padded canvas.
  */
-export async function splitImageIntoQuadrants(sourceUrl, mimeType = 'image/jpeg') {
+export async function splitImageGrid(sourceUrl, cols = 2, rows = 2, mimeType = 'image/png') {
+  cols = Math.max(1, parseInt(cols, 10) || 2);
+  rows = Math.max(1, parseInt(rows, 10) || 2);
+
   const img = typeof sourceUrl === 'string' ? await loadImageElement(sourceUrl) : sourceUrl;
   const w = img.naturalWidth || img.width;
   const h = img.naturalHeight || img.height;
@@ -507,81 +511,122 @@ export async function splitImageIntoQuadrants(sourceUrl, mimeType = 'image/jpeg'
 
   const imgData = srcCtx.getImageData(0, 0, w, h).data;
 
-  // Detect background color from corners & mid-borders
+  // Detect background color from corners & border samples
   const corners = [
     [2, 2], [w - 3, 2], [2, h - 3], [w - 3, h - 3],
-    [Math.floor(w / 2), 2], [Math.floor(w / 2), h - 3]
+    [Math.floor(w / 2), 2], [Math.floor(w / 2), h - 3],
+    [2, Math.floor(h / 2)], [w - 3, Math.floor(h / 2)]
   ];
   let bgR = 0, bgG = 0, bgB = 0;
+  let transparentCorners = 0;
   for (const [cx, cy] of corners) {
-    const idx = (Math.max(0, cy) * w + Math.max(0, cx)) * 4;
-    bgR += imgData[idx];
-    bgG += imgData[idx + 1];
-    bgB += imgData[idx + 2];
+    const idx = (Math.max(0, Math.min(h - 1, cy)) * w + Math.max(0, Math.min(w - 1, cx))) * 4;
+    if (imgData[idx + 3] < 30) {
+      transparentCorners++;
+    } else {
+      bgR += imgData[idx];
+      bgG += imgData[idx + 1];
+      bgB += imgData[idx + 2];
+    }
   }
-  bgR = Math.round(bgR / corners.length);
-  bgG = Math.round(bgG / corners.length);
-  bgB = Math.round(bgB / corners.length);
+  const opaqueCount = corners.length - transparentCorners;
+  if (opaqueCount > 0) {
+    bgR = Math.round(bgR / opaqueCount);
+    bgG = Math.round(bgG / opaqueCount);
+    bgB = Math.round(bgB / opaqueCount);
+  } else {
+    bgR = 255; bgG = 255; bgB = 255;
+  }
+  const isSourceTransparent = transparentCorners >= corners.length / 2;
 
   const isForeground = (x, y) => {
     const idx = (y * w + x) * 4;
     if (imgData[idx + 3] < 30) return false;
+    if (isSourceTransparent) return true;
     const diff = Math.abs(imgData[idx] - bgR) + Math.abs(imgData[idx + 1] - bgG) + Math.abs(imgData[idx + 2] - bgB);
     return diff > 36;
   };
 
-  // Find best vertical gutter splitX between 35% and 65% of width
-  let splitX = Math.floor(w / 2);
-  let minColScore = Infinity;
-  const minXSearch = Math.floor(w * 0.35);
-  const maxXSearch = Math.floor(w * 0.65);
-  for (let x = minXSearch; x <= maxXSearch; x++) {
-    let fgCount = 0;
-    for (let y = 0; y < h; y += 2) {
-      if (isForeground(x, y)) fgCount++;
+  // Find vertical gutters between columns
+  const bestXs = [];
+  const cellW = w / cols;
+  const searchRadiusX = Math.floor(cellW * 0.30);
+
+  for (let c = 1; c < cols; c++) {
+    const targetX = Math.round((c * w) / cols);
+    const minX = Math.max(1, targetX - searchRadiusX);
+    const maxX = Math.min(w - 2, targetX + searchRadiusX);
+
+    let bestX = targetX;
+    let minScore = Infinity;
+    for (let x = minX; x <= maxX; x++) {
+      let fgCount = 0;
+      for (let y = 0; y < h; y += 2) {
+        if (isForeground(x, y)) fgCount++;
+      }
+      const centerBias = Math.abs(x - targetX) * 0.05;
+      const score = fgCount + centerBias;
+      if (score < minScore) {
+        minScore = score;
+        bestX = x;
+      }
     }
-    const centerBias = Math.abs(x - w / 2) * 0.05;
-    const score = fgCount + centerBias;
-    if (score < minColScore) {
-      minColScore = score;
-      splitX = x;
-    }
+    bestXs.push(bestX);
   }
 
-  // Find best horizontal gutter splitY between 35% and 65% of height
-  let splitY = Math.floor(h / 2);
-  let minRowScore = Infinity;
-  const minYSearch = Math.floor(h * 0.35);
-  const maxYSearch = Math.floor(h * 0.65);
-  for (let y = minYSearch; y <= maxYSearch; y++) {
-    let fgCount = 0;
-    for (let x = 0; x < w; x += 2) {
-      if (isForeground(x, y)) fgCount++;
+  // Find horizontal gutters between rows
+  const bestYs = [];
+  const cellH = h / rows;
+  const searchRadiusY = Math.floor(cellH * 0.30);
+
+  for (let r = 1; r < rows; r++) {
+    const targetY = Math.round((r * h) / rows);
+    const minY = Math.max(1, targetY - searchRadiusY);
+    const maxY = Math.min(h - 2, targetY + searchRadiusY);
+
+    let bestY = targetY;
+    let minScore = Infinity;
+    for (let y = minY; y <= maxY; y++) {
+      let fgCount = 0;
+      for (let x = 0; x < w; x += 2) {
+        if (isForeground(x, y)) fgCount++;
+      }
+      const centerBias = Math.abs(y - targetY) * 0.05;
+      const score = fgCount + centerBias;
+      if (score < minScore) {
+        minScore = score;
+        bestY = y;
+      }
     }
-    const centerBias = Math.abs(y - h / 2) * 0.05;
-    const score = fgCount + centerBias;
-    if (score < minRowScore) {
-      minRowScore = score;
-      splitY = y;
-    }
+    bestYs.push(bestY);
   }
 
-  const quads = [
-    { x0: 0, y0: 0, x1: splitX, y1: splitY },
-    { x0: splitX, y0: 0, x1: w, y1: splitY },
-    { x0: 0, y0: splitY, x1: splitX, y1: h },
-    { x0: splitX, y0: splitY, x1: w, y1: h }
-  ];
+  const splitXs = [0, ...bestXs, w];
+  const splitYs = [0, ...bestYs, h];
+
+  const cells = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      cells.push({
+        x0: splitXs[c],
+        y0: splitYs[r],
+        x1: splitXs[c + 1],
+        y1: splitYs[r + 1],
+        row: r,
+        col: c
+      });
+    }
+  }
 
   const results = [];
   const isLightBg = bgR > 235 && bgG > 235 && bgB > 235;
 
-  for (let i = 0; i < quads.length; i++) {
-    const q = quads[i];
+  for (let i = 0; i < cells.length; i++) {
+    const q = cells[i];
     const qw = q.x1 - q.x0;
     const qh = q.y1 - q.y0;
 
-    // Detect tight bounding box of foreground object inside this quadrant
+    // Detect tight bounding box of foreground object inside this cell
     let minX = q.x1, minY = q.y1, maxX = q.x0, maxY = q.y0;
     let fgPixels = 0;
     for (let y = q.y0; y < q.y1; y++) {
@@ -597,25 +642,28 @@ export async function splitImageIntoQuadrants(sourceUrl, mimeType = 'image/jpeg'
     }
 
     const outCanvas = document.createElement('canvas');
-    const hasIsolatedObject = fgPixels > 100 && (maxX > minX) && (maxY > minY) && ((maxX - minX) < qw * 0.96 || (maxY - minY) < qh * 0.96);
+    const hasIsolatedObject = fgPixels > 60 && (maxX > minX) && (maxY > minY) && ((maxX - minX) < qw * 0.98 || (maxY - minY) < qh * 0.98);
 
     if (hasIsolatedObject) {
-      // Center the detected icon/object cleanly with 14% breathing room padding
+      // Center the detected icon/object cleanly with 28% padding
       const objW = maxX - minX + 1;
       const objH = maxY - minY + 1;
       const side = Math.round(Math.max(objW, objH) * 1.28);
-      outCanvas.width = Math.max(side, qw);
-      outCanvas.height = Math.max(side, qh);
+      const canvasDim = Math.max(side, Math.max(qw, qh));
+      outCanvas.width = canvasDim;
+      outCanvas.height = canvasDim;
 
       const outCtx = outCanvas.getContext('2d');
-      outCtx.fillStyle = isLightBg ? '#FFFFFF' : `rgb(${bgR}, ${bgG}, ${bgB})`;
-      outCtx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+      if (!isSourceTransparent) {
+        outCtx.fillStyle = isLightBg ? '#FFFFFF' : `rgb(${bgR}, ${bgG}, ${bgB})`;
+        outCtx.fillRect(0, 0, outCanvas.width, outCanvas.height);
+      }
 
       const dstX = Math.round((outCanvas.width - objW) / 2);
       const dstY = Math.round((outCanvas.height - objH) / 2);
       outCtx.drawImage(srcCanvas, minX, minY, objW, objH, dstX, dstY, objW, objH);
     } else {
-      // Full quadrant crop
+      // Full cell crop
       outCanvas.width = qw;
       outCanvas.height = qh;
       const outCtx = outCanvas.getContext('2d');
@@ -629,6 +677,8 @@ export async function splitImageIntoQuadrants(sourceUrl, mimeType = 'image/jpeg'
 
     results.push({
       index: i + 1,
+      row: q.row,
+      col: q.col,
       blob,
       url: URL.createObjectURL(blob),
       width: outCanvas.width,
@@ -638,4 +688,9 @@ export async function splitImageIntoQuadrants(sourceUrl, mimeType = 'image/jpeg'
 
   return results;
 }
+
+export async function splitImageIntoQuadrants(sourceUrl, mimeType = 'image/jpeg') {
+  return splitImageGrid(sourceUrl, 2, 2, mimeType);
+}
+
 

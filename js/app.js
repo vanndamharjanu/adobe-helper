@@ -1,4 +1,4 @@
-import { upscaleImage, isolateSubjectBackground, splitImageIntoQuadrants } from './upscaler.js';
+import { upscaleImage, isolateSubjectBackground, splitImageIntoQuadrants, splitImageGrid } from './upscaler.js';
 import { convertImageToVector } from './vectorizer.js';
 import {
   analyzeImageWithGemini,
@@ -148,6 +148,7 @@ const state = {
   searchQuery: '',
   isBatchRunning: false,
   exportAgency: 'adobe',
+  exportCsvFormat: 'raster', // 'raster' | 'svg' | 'eps'
   compareViewMode: 'raster', // 'raster' | 'vector'
   compareZoom: 1,
   settings: {
@@ -497,9 +498,18 @@ function refreshStatsAndGrid() {
                 <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" data-action="vector" data-id="${item.id}">
                   SVG
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2" data-action="split4" data-id="${item.id}" title="Pecah Grid 2x2 menjadi 4 gambar terpisah">
-                  Pecah 4
-                </button>
+                <div class="dropdown d-inline-block">
+                  <button type="button" class="btn btn-sm btn-outline-secondary py-1 px-2 dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Pecah grid menjadi beberapa gambar terpisah">
+                    <i class="bi bi-grid-3x3 me-1 text-primary"></i>Pecah
+                  </button>
+                  <ul class="dropdown-menu dropdown-menu-start shadow-sm border py-1" style="font-size:0.8125rem; min-width:215px; z-index:1050;">
+                    <li><h6 class="dropdown-header py-1 text-uppercase fw-bold text-muted" style="font-size:0.68rem; letter-spacing:0.5px;">Pecah Grid Otomatis</h6></li>
+                    <li><button type="button" class="dropdown-item py-1.5 d-flex align-items-center justify-content-between" data-action="split" data-grid="2x2" data-id="${item.id}"><span><i class="bi bi-grid me-2 text-primary"></i><strong>2×2</strong> (4 Gambar)</span> <span class="badge bg-light text-muted border font-monospace">4 pcs</span></button></li>
+                    <li><button type="button" class="dropdown-item py-1.5 d-flex align-items-center justify-content-between" data-action="split" data-grid="3x3" data-id="${item.id}"><span><i class="bi bi-grid-3x3-gap me-2 text-primary"></i><strong>3×3</strong> (9 Gambar)</span> <span class="badge bg-light text-muted border font-monospace">9 pcs</span></button></li>
+                    <li><button type="button" class="dropdown-item py-1.5 d-flex align-items-center justify-content-between" data-action="split" data-grid="2x3" data-id="${item.id}"><span><i class="bi bi-columns me-2 text-primary"></i><strong>2×3</strong> (6 Gambar: 2 Kolom)</span> <span class="badge bg-light text-muted border font-monospace">6 pcs</span></button></li>
+                    <li><button type="button" class="dropdown-item py-1.5 d-flex align-items-center justify-content-between" data-action="split" data-grid="3x2" data-id="${item.id}"><span><i class="bi bi-layout-three-columns me-2 text-primary"></i><strong>3×2</strong> (6 Gambar: 3 Kolom)</span> <span class="badge bg-light text-muted border font-monospace">6 pcs</span></button></li>
+                  </ul>
+                </div>
               </div>
 
               <div class="d-flex gap-1">
@@ -717,13 +727,21 @@ async function runSingleVectorize(item) {
 }
 
 async function runSingleSplitFour(item) {
+  return runSingleSplitGrid(item, 2, 2);
+}
+
+async function runSingleSplitGrid(item, cols = 2, rows = 2) {
+  cols = Math.max(1, parseInt(cols, 10) || 2);
+  rows = Math.max(1, parseInt(rows, 10) || 2);
+  const totalParts = cols * rows;
+
   item.status = 'processing';
-  item.stepText = 'Memotong 4...';
+  item.stepText = `Memotong ${cols}×${rows}...`;
   refreshStatsAndGrid();
 
   try {
     const baseName = item.name.replace(/\.[^/.]+$/, '');
-    const parts = await splitImageIntoQuadrants(item.previewUrl, 'image/png');
+    const parts = await splitImageGrid(item.previewUrl, cols, rows, 'image/png');
     const newItems = [];
 
     for (const part of parts) {
@@ -749,7 +767,7 @@ async function runSingleSplitFour(item) {
       await saveItemToDb(newItem);
     }
 
-    // Replace or insert right after the original 2x2 grid item
+    // Replace or insert right after the original grid item
     const origIdx = state.items.findIndex(i => i.id === item.id);
     if (origIdx !== -1) {
       state.items.splice(origIdx + 1, 0, ...newItems);
@@ -765,9 +783,9 @@ async function runSingleSplitFour(item) {
     if (state.activeItemId === item.id) {
       inspectModalInstance?.hide();
     }
-    showToast('Berhasil Dipecah Jadi 4 Gambar', `4 objek (${baseName}_part1 s/d part4) telah dipotong & dirapikan ke antrean.`, 'success');
+    showToast(`Berhasil Dipecah (${cols}×${rows})`, `${totalParts} objek (${baseName}_part1 s/d part${totalParts}) telah dipotong & dirapikan ke antrean.`, 'success');
   } catch (err) {
-    console.error('Split 4 error:', err);
+    console.error(`Split ${cols}x${rows} error:`, err);
     item.status = 'error';
     item.stepText = 'Gagal Potong';
     refreshStatsAndGrid();
@@ -1676,7 +1694,12 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (action === 'upscale') runSingleUpscale(item);
     else if (action === 'meta') runSingleVisionMeta(item);
     else if (action === 'vector') runSingleVectorize(item);
-    else if (action === 'split4') runSingleSplitFour(item);
+    else if (action === 'split4') runSingleSplitGrid(item, 2, 2);
+    else if (action === 'split') {
+      const grid = target.dataset.grid || '2x2';
+      const [c, r] = grid.split('x').map(Number);
+      runSingleSplitGrid(item, c || 2, r || 2);
+    }
     else if (action === 'download') downloadSingleAsset(item, true);
     else if (action === 'download-svg') downloadSvgAsset(item);
     else if (action === 'download-eps') downloadEpsAsset(item);
@@ -1867,10 +1890,26 @@ document.addEventListener('DOMContentLoaded', () => {
     if (item) runSingleVectorize(item);
   });
 
-  document.getElementById('btnModalSplit4').addEventListener('click', () => {
-    const item = state.items.find(i => i.id === state.activeItemId);
-    if (item) runSingleSplitFour(item);
+  ['2x2', '3x3', '2x3', '3x2'].forEach(grid => {
+    const btn = document.getElementById(`btnModalSplit${grid}`);
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const item = state.items.find(i => i.id === state.activeItemId);
+        if (item) {
+          const [c, r] = grid.split('x').map(Number);
+          runSingleSplitGrid(item, c, r);
+        }
+      });
+    }
   });
+
+  const btnModalSplit4 = document.getElementById('btnModalSplit4');
+  if (btnModalSplit4) {
+    btnModalSplit4.addEventListener('click', () => {
+      const item = state.items.find(i => i.id === state.activeItemId);
+      if (item) runSingleSplitGrid(item, 2, 2);
+    });
+  }
 
   document.getElementById('btnDownloadSvg').addEventListener('click', () => {
     const item = state.items.find(i => String(i.id) === String(state.activeItemId));
@@ -1965,16 +2004,30 @@ document.addEventListener('DOMContentLoaded', () => {
     state.exportAgency = btn.dataset.agency;
   });
 
+  const exportCsvFormatGroup = document.getElementById('exportCsvFormatGroup');
+  if (exportCsvFormatGroup) {
+    exportCsvFormatGroup.addEventListener('click', e => {
+      const btn = e.target.closest('[data-csv-format]');
+      if (!btn) return;
+      document.querySelectorAll('#exportCsvFormatGroup .preset-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.exportCsvFormat = btn.dataset.csvFormat;
+    });
+  }
+
   document.getElementById('btnExportCsvOnly').addEventListener('click', () => {
-    const csvContent = generateAgencyCsv(state.items, state.exportAgency);
+    const csvFormat = state.exportCsvFormat || 'raster';
+    const csvContent = generateAgencyCsv(state.items, state.exportAgency, csvFormat);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `metadata_${state.exportAgency}_${new Date().toISOString().slice(0, 10)}.csv`;
+    const suffix = csvFormat === 'raster' ? '' : `_${csvFormat}`;
+    a.download = `metadata_${state.exportAgency}${suffix}_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast('CSV Diunduh', `File CSV format ${state.exportAgency.toUpperCase()} berhasil disimpan.`, 'success');
+    const label = csvFormat === 'svg' ? 'SVG Vector' : csvFormat === 'eps' ? 'EPS Vector' : 'JPG/PNG';
+    showToast('CSV Diunduh', `File CSV (${label}) format ${state.exportAgency.toUpperCase()} berhasil disimpan.`, 'success');
   });
 
   document.getElementById('btnExportFullZip').addEventListener('click', async () => {
@@ -2019,8 +2072,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (includeCsv) {
-        const csvContent = generateAgencyCsv(state.items, state.exportAgency);
-        folder.file(`metadata_${state.exportAgency}.csv`, csvContent);
+        const csvFormat = state.exportCsvFormat || 'raster';
+        const csvContent = generateAgencyCsv(state.items, state.exportAgency, csvFormat);
+        const suffix = csvFormat === 'raster' ? '' : `_${csvFormat}`;
+        folder.file(`metadata_${state.exportAgency}${suffix}.csv`, csvContent);
+        if (csvFormat !== 'raster') {
+          const rasterCsv = generateAgencyCsv(state.items, state.exportAgency, 'raster');
+          folder.file(`metadata_${state.exportAgency}_raster.csv`, rasterCsv);
+        }
       }
 
       const zipBlob = await zip.generateAsync(

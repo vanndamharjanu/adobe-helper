@@ -1,5 +1,5 @@
 import { upscaleImage, isolateSubjectBackground, eraseBackgroundAtPoint, splitImageIntoQuadrants, splitImageGrid } from './upscaler.js';
-import { convertImageToVector } from './vectorizer.js';
+import { convertImageToVector, injectSvgMetadata, updateEpsMetadata } from './vectorizer.js';
 import {
   analyzeImageWithGemini,
   discoverAvailableVisionModels,
@@ -13,7 +13,9 @@ import {
   ADOBE_CATEGORIES,
   embedMetadataIntoBlob,
   getExportFilename,
-  generateAgencyCsv
+  generateAgencyCsv,
+  computeExportReadiness,
+  filterExportableItems
 } from './xmp-exporter.js';
 import {
   MONTH_NAMES_ID,
@@ -167,6 +169,8 @@ const state = {
     bgTolerance: 16,
     bgMode: 'transparent',
     removeInternalHoles: false,
+    autoCenterBg: false,
+    compareBg: 'dark',
     keywordCount: 42,
     assetStyle: 'ai-auto',
     focusTheme: '',
@@ -180,6 +184,131 @@ const state = {
     })()
   }
 };
+
+const SETTINGS_STORAGE_KEY = 'adobe_helper_studio_settings_v1';
+
+function loadSavedSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== 'object') return;
+    const s = state.settings;
+    if (['4mp', '8mp', '12mp', '16mp'].includes(saved.targetScale)) s.targetScale = saved.targetScale;
+    if (['ai-photorealistic', 'ai-illustration', 'ultra-sharp'].includes(saved.profile)) s.profile = saved.profile;
+    if (typeof saved.sharpness === 'number' && saved.sharpness >= 0.3 && saved.sharpness <= 1) s.sharpness = saved.sharpness;
+    if (['image/jpeg', 'image/png'].includes(saved.outputFormat)) s.outputFormat = saved.outputFormat;
+    if ([92, 95, 98].includes(Number(saved.jpegQuality))) s.jpegQuality = Number(saved.jpegQuality);
+    if (typeof saved.vectorColors === 'number' && saved.vectorColors >= 4 && saved.vectorColors <= 32) s.vectorColors = saved.vectorColors;
+    if (typeof saved.minSpeckleArea === 'number' && saved.minSpeckleArea >= 4 && saved.minSpeckleArea <= 40) s.minSpeckleArea = saved.minSpeckleArea;
+    if (typeof saved.autoIsolateBg === 'boolean') s.autoIsolateBg = saved.autoIsolateBg;
+    if (typeof saved.bgTolerance === 'number' && saved.bgTolerance >= 5 && saved.bgTolerance <= 55) s.bgTolerance = saved.bgTolerance;
+    if (['transparent', 'white'].includes(saved.bgMode)) s.bgMode = saved.bgMode;
+    if (typeof saved.removeInternalHoles === 'boolean') s.removeInternalHoles = saved.removeInternalHoles;
+    if (typeof saved.autoCenterBg === 'boolean') s.autoCenterBg = saved.autoCenterBg;
+    if (['dark', 'checker', 'light'].includes(saved.compareBg)) s.compareBg = saved.compareBg;
+    if (typeof saved.keywordCount === 'number' && saved.keywordCount >= 25 && saved.keywordCount <= 49) s.keywordCount = saved.keywordCount;
+    if (['ai-auto', 'ai-photo', 'ai-illustration', 'ai-vector'].includes(saved.assetStyle)) s.assetStyle = saved.assetStyle;
+    if (typeof saved.focusTheme === 'string') s.focusTheme = saved.focusTheme;
+  } catch (err) {
+    console.warn('Could not load saved studio settings:', err);
+  }
+}
+
+function saveSettingsToStorage() {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(state.settings));
+  } catch (err) {
+    console.warn('Could not save studio settings:', err);
+  }
+}
+
+function applyStageBackground(mode = state.settings.compareBg) {
+  const validMode = ['dark', 'checker', 'light'].includes(mode) ? mode : 'dark';
+  state.settings.compareBg = validMode;
+  const stage = document.getElementById('compareStage');
+  if (stage) {
+    stage.classList.toggle('stage-bg-checker', validMode === 'checker');
+    stage.classList.toggle('stage-bg-light', validMode === 'light');
+  }
+  document.querySelectorAll('#stageBgGroup button[data-stage-bg]').forEach(btn => {
+    const active = btn.dataset.stageBg === validMode;
+    btn.classList.toggle('btn-dark', active);
+    btn.classList.toggle('active', active);
+    btn.classList.toggle('btn-outline-secondary', !active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function syncBgControlsUI() {
+  const tol = state.settings.bgTolerance;
+  const mode = state.settings.bgMode;
+  const holes = state.settings.removeInternalHoles;
+  const center = state.settings.autoCenterBg;
+  const sideTol = document.getElementById('rangeBgTolerance');
+  const sideLabel = document.getElementById('labelBgTolerance');
+  const sideMode = document.getElementById('selectBgMode');
+  const sideHoles = document.getElementById('checkRemoveInternalHoles');
+  const sideCenter = document.getElementById('checkAutoCenterBg');
+  const modalTol = document.getElementById('rangeModalBgTolerance');
+  const modalLabel = document.getElementById('labelModalBgTolerance');
+  const modalMode = document.getElementById('selectModalBgMode');
+  const modalHoles = document.getElementById('checkModalInternalHoles');
+  const modalCenter = document.getElementById('checkModalAutoCenterBg');
+  if (sideTol) sideTol.value = tol;
+  if (sideLabel) sideLabel.textContent = `${tol}%`;
+  if (sideMode) sideMode.value = mode;
+  if (sideHoles) sideHoles.checked = holes;
+  if (sideCenter) sideCenter.checked = center;
+  if (modalTol) modalTol.value = tol;
+  if (modalLabel) modalLabel.textContent = `${tol}%`;
+  if (modalMode) modalMode.value = mode;
+  if (modalHoles) modalHoles.checked = holes;
+  if (modalCenter) modalCenter.checked = center;
+}
+
+function applySettingsToSidebarUI() {
+  const s = state.settings;
+  document.querySelectorAll('#scalePresetGroup .preset-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.scale === s.targetScale);
+  });
+  const selProfile = document.getElementById('selectUpscaleProfile');
+  if (selProfile) selProfile.value = s.profile;
+  const rangeSharp = document.getElementById('rangeSharpness');
+  const lblSharp = document.getElementById('labelSharpnessVal');
+  const sharpPct = Math.round(s.sharpness * 100);
+  if (rangeSharp) rangeSharp.value = sharpPct;
+  if (lblSharp) lblSharp.textContent = `${sharpPct}%`;
+  const selFmt = document.getElementById('selectOutputFormat');
+  if (selFmt) selFmt.value = s.outputFormat;
+  const selQual = document.getElementById('selectJpegQuality');
+  if (selQual) selQual.value = String(s.jpegQuality);
+
+  const rangeVecCol = document.getElementById('rangeVectorColors');
+  const lblVecCol = document.getElementById('labelVectorColors');
+  if (rangeVecCol) rangeVecCol.value = s.vectorColors;
+  if (lblVecCol) lblVecCol.textContent = `${s.vectorColors} Warna`;
+  const rangeSpeckle = document.getElementById('rangeSpeckleArea');
+  const lblSpeckle = document.getElementById('labelSpeckleArea');
+  if (rangeSpeckle) rangeSpeckle.value = s.minSpeckleArea;
+  if (lblSpeckle) lblSpeckle.textContent = `${s.minSpeckleArea} px`;
+
+  const chkAutoIso = document.getElementById('checkAutoIsolateBg');
+  const bgTolBox = document.getElementById('bgToleranceBox');
+  if (chkAutoIso) chkAutoIso.checked = s.autoIsolateBg;
+  if (bgTolBox) bgTolBox.classList.toggle('d-none', !s.autoIsolateBg);
+  syncBgControlsUI();
+  applyStageBackground(s.compareBg);
+
+  const rangeKw = document.getElementById('rangeKeywordCount');
+  const lblKw = document.getElementById('labelKeywordCount');
+  if (rangeKw) rangeKw.value = s.keywordCount;
+  if (lblKw) lblKw.textContent = `${s.keywordCount} tags`;
+  const selStyle = document.getElementById('selectAssetStyle');
+  if (selStyle) selStyle.value = s.assetStyle;
+  const inpTheme = document.getElementById('inputFocusTheme');
+  if (inpTheme) inpTheme.value = s.focusTheme;
+}
 
 // Bootstrap Modal instances
 let inspectModalInstance = null;
@@ -613,7 +742,8 @@ async function runSingleUpscale(item) {
       const iso = await isolateSubjectBackground(res.url, {
         tolerance: state.settings.bgTolerance,
         fillWhite: state.settings.bgMode === 'white',
-        removeInternalHoles: state.settings.removeInternalHoles
+        removeInternalHoles: state.settings.removeInternalHoles,
+        autoCenter: state.settings.autoCenterBg
       });
       URL.revokeObjectURL(res.url);
       item.isIsolated = true;
@@ -651,6 +781,63 @@ async function runSingleUpscale(item) {
   }
 }
 
+async function runSingleIsolateBg(item, { showSuccessToast = true } = {}) {
+  if (!item) return;
+  item.status = 'processing';
+  item.stepText = 'Hapus BG...';
+  refreshStatsAndGrid();
+
+  try {
+    const srcUrl = item.upscaledUrl || item.isolatedUrl || item.previewUrl;
+    const iso = await isolateSubjectBackground(srcUrl, {
+      tolerance: state.settings.bgTolerance,
+      fillWhite: state.settings.bgMode === 'white',
+      removeInternalHoles: state.settings.removeInternalHoles,
+      autoCenter: state.settings.autoCenterBg
+    });
+    await applyIsolationResultToItem(item, iso);
+    if (showSuccessToast) {
+      showToast('Background Dihapus', 'Latar berhasil dibersihkan dengan edge matting.', 'success');
+    }
+  } catch (err) {
+    console.error('Isolate BG error:', err);
+    item.status = 'error';
+    item.stepText = 'Gagal Hapus BG';
+    refreshStatsAndGrid();
+    showToast('Gagal Hapus Background', err.message, 'danger');
+  }
+}
+
+function syncVectorMetadataStrings(item) {
+  if (!item || !item.isVectorized) return false;
+  const meta = item.metadata || {};
+  let changed = false;
+  if (item.svgString) {
+    item.svgString = injectSvgMetadata(item.svgString, meta);
+    changed = true;
+  }
+  if (item.epsString) {
+    item.epsString = updateEpsMetadata(item.epsString, meta);
+    changed = true;
+  }
+  return changed;
+}
+
+function rebuildVectorBlobs(item, { revokeOldUrls = true } = {}) {
+  if (!item || !item.isVectorized) return;
+  syncVectorMetadataStrings(item);
+  if (item.svgString) {
+    if (revokeOldUrls && item.svgUrl) URL.revokeObjectURL(item.svgUrl);
+    item.svgBlob = new Blob([item.svgString], { type: 'image/svg+xml' });
+    item.svgUrl = URL.createObjectURL(item.svgBlob);
+  }
+  if (item.epsString) {
+    if (revokeOldUrls && item.epsUrl) URL.revokeObjectURL(item.epsUrl);
+    item.epsBlob = new Blob([item.epsString], { type: 'application/postscript' });
+    item.epsUrl = URL.createObjectURL(item.epsBlob);
+  }
+}
+
 async function runSingleVisionMeta(item) {
   const savedKeys = (localStorage.getItem('adobe_helper_gemini_keys') || '').trim();
   if (!savedKeys) {
@@ -677,6 +864,10 @@ async function runSingleVisionMeta(item) {
       item.upscaledBlob = await embedMetadataIntoBlob(item.upscaledBlob, meta);
       item.upscaledSize = item.upscaledBlob.size;
     }
+    if (item.isolatedBlob) {
+      item.isolatedBlob = await embedMetadataIntoBlob(item.isolatedBlob, meta);
+    }
+    rebuildVectorBlobs(item, { revokeOldUrls: state.activeItemId !== item.id });
     item.status = 'done';
     item.stepText = '';
     item.audit = auditAdobeCompliance(item);
@@ -812,13 +1003,10 @@ async function runSingleSplitGrid(item, cols = 2, rows = 2) {
 
 function downloadSvgAsset(item) {
   if (!item) return;
-  if (!item.svgUrl) {
-    if (item.svgBlob) {
-      item.svgUrl = URL.createObjectURL(item.svgBlob);
-    } else if (item.svgString) {
-      item.svgBlob = new Blob([item.svgString], { type: 'image/svg+xml;charset=utf-8' });
-      item.svgUrl = URL.createObjectURL(item.svgBlob);
-    }
+  if (item.svgString) {
+    rebuildVectorBlobs(item);
+  } else if (!item.svgUrl && item.svgBlob) {
+    item.svgUrl = URL.createObjectURL(item.svgBlob);
   }
   if (!item.svgUrl) {
     showToast('Vector Belum Siap', 'File SVG belum dibuat untuk gambar ini.', 'warning');
@@ -836,13 +1024,10 @@ function downloadSvgAsset(item) {
 
 function downloadEpsAsset(item) {
   if (!item) return;
-  if (!item.epsUrl) {
-    if (item.epsBlob) {
-      item.epsUrl = URL.createObjectURL(item.epsBlob);
-    } else if (item.epsString) {
-      item.epsBlob = new Blob([item.epsString], { type: 'application/postscript' });
-      item.epsUrl = URL.createObjectURL(item.epsBlob);
-    }
+  if (item.epsString) {
+    rebuildVectorBlobs(item);
+  } else if (!item.epsUrl && item.epsBlob) {
+    item.epsUrl = URL.createObjectURL(item.epsBlob);
   }
   if (!item.epsUrl) {
     showToast('Vector Belum Siap', 'File EPS belum dibuat untuk gambar ini.', 'warning');
@@ -1128,9 +1313,13 @@ async function applyIsolationResultToItem(item, iso) {
     item.upscaledUrl = iso.url;
     item.upscaledSize = outBlob.size;
   }
+  item.status = 'done';
+  item.stepText = '';
   item.audit = auditAdobeCompliance(item);
   await saveItemToDb(item);
-  renderInspectModal(item);
+  if (state.activeItemId === item.id) {
+    renderInspectModal(item);
+  }
   refreshStatsAndGrid();
 }
 
@@ -1275,6 +1464,7 @@ function syncActiveModalMetadata() {
   item.metadata.fictionalPeople = document.getElementById('modalCheckFictional').checked;
 
   updateCharCounters(item.metadata.title, item.metadata.description);
+  syncVectorMetadataStrings(item);
   item.audit = auditAdobeCompliance(item);
   saveItemToDb(item);
   refreshStatsAndGrid();
@@ -1458,6 +1648,8 @@ document.addEventListener('DOMContentLoaded', () => {
   exportModalInstance = new bootstrap.Modal(document.getElementById('exportModal'));
   guideModalInstance = new bootstrap.Modal(document.getElementById('guideModal'));
 
+  loadSavedSettings();
+  applySettingsToSidebarUI();
   populateCategoryDropdown();
   updateApiKeyBanner();
   refreshStatsAndGrid();
@@ -1565,6 +1757,7 @@ document.addEventListener('DOMContentLoaded', () => {
       state.settings.focusTheme = theme;
       const inputTheme = document.getElementById('inputFocusTheme');
       if (inputTheme) inputTheme.value = theme;
+      saveSettingsToStorage();
       switchMainPage('studio');
       const metaTabBtn = document.querySelector('[data-bs-target="#tabVision"]');
       if (metaTabBtn) bootstrap.Tab.getOrCreateInstance(metaTabBtn).show();
@@ -1589,6 +1782,7 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast('Antrean Kosong', 'Tambahkan minimal 1 gambar terlebih dahulu.', 'warning');
       return;
     }
+    updateExportModalReadiness();
     exportModalInstance.show();
   });
 
@@ -1720,63 +1914,49 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('#scalePresetGroup .preset-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.settings.targetScale = btn.dataset.scale;
+    saveSettingsToStorage();
   });
 
   document.getElementById('selectUpscaleProfile').addEventListener('change', e => {
     state.settings.profile = e.target.value;
+    saveSettingsToStorage();
   });
 
   document.getElementById('rangeSharpness').addEventListener('input', e => {
     const val = parseInt(e.target.value, 10);
     document.getElementById('labelSharpnessVal').textContent = `${val}%`;
     state.settings.sharpness = val / 100;
+    saveSettingsToStorage();
   });
 
   document.getElementById('selectOutputFormat').addEventListener('change', e => {
     state.settings.outputFormat = e.target.value;
+    saveSettingsToStorage();
   });
 
   document.getElementById('selectJpegQuality').addEventListener('change', e => {
     state.settings.jpegQuality = parseInt(e.target.value, 10);
+    saveSettingsToStorage();
   });
 
   document.getElementById('rangeVectorColors').addEventListener('input', e => {
     const val = parseInt(e.target.value, 10);
     document.getElementById('labelVectorColors').textContent = `${val} Warna`;
     state.settings.vectorColors = val;
+    saveSettingsToStorage();
   });
 
   document.getElementById('rangeSpeckleArea').addEventListener('input', e => {
     const val = parseInt(e.target.value, 10);
     document.getElementById('labelSpeckleArea').textContent = `${val} px`;
     state.settings.minSpeckleArea = val;
+    saveSettingsToStorage();
   });
-
-  const syncBgControlsUI = () => {
-    const tol = state.settings.bgTolerance;
-    const mode = state.settings.bgMode;
-    const holes = state.settings.removeInternalHoles;
-    const sideTol = document.getElementById('rangeBgTolerance');
-    const sideLabel = document.getElementById('labelBgTolerance');
-    const sideMode = document.getElementById('selectBgMode');
-    const sideHoles = document.getElementById('checkRemoveInternalHoles');
-    const modalTol = document.getElementById('rangeModalBgTolerance');
-    const modalLabel = document.getElementById('labelModalBgTolerance');
-    const modalMode = document.getElementById('selectModalBgMode');
-    const modalHoles = document.getElementById('checkModalInternalHoles');
-    if (sideTol) sideTol.value = tol;
-    if (sideLabel) sideLabel.textContent = `${tol}%`;
-    if (sideMode) sideMode.value = mode;
-    if (sideHoles) sideHoles.checked = holes;
-    if (modalTol) modalTol.value = tol;
-    if (modalLabel) modalLabel.textContent = `${tol}%`;
-    if (modalMode) modalMode.value = mode;
-    if (modalHoles) modalHoles.checked = holes;
-  };
 
   document.getElementById('checkAutoIsolateBg').addEventListener('change', e => {
     state.settings.autoIsolateBg = e.target.checked;
     document.getElementById('bgToleranceBox').classList.toggle('d-none', !e.target.checked);
+    saveSettingsToStorage();
   });
 
   ['rangeBgTolerance', 'rangeModalBgTolerance'].forEach(id => {
@@ -1785,6 +1965,7 @@ document.addEventListener('DOMContentLoaded', () => {
       el.addEventListener('input', e => {
         state.settings.bgTolerance = parseInt(e.target.value, 10);
         syncBgControlsUI();
+        saveSettingsToStorage();
       });
     }
   });
@@ -1795,6 +1976,7 @@ document.addEventListener('DOMContentLoaded', () => {
       el.addEventListener('change', e => {
         state.settings.bgMode = e.target.value;
         syncBgControlsUI();
+        saveSettingsToStorage();
       });
     }
   });
@@ -1805,6 +1987,18 @@ document.addEventListener('DOMContentLoaded', () => {
       el.addEventListener('change', e => {
         state.settings.removeInternalHoles = e.target.checked;
         syncBgControlsUI();
+        saveSettingsToStorage();
+      });
+    }
+  });
+
+  ['checkAutoCenterBg', 'checkModalAutoCenterBg'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('change', e => {
+        state.settings.autoCenterBg = e.target.checked;
+        syncBgControlsUI();
+        saveSettingsToStorage();
       });
     }
   });
@@ -1813,14 +2007,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const val = parseInt(e.target.value, 10);
     document.getElementById('labelKeywordCount').textContent = `${val} tags`;
     state.settings.keywordCount = val;
+    saveSettingsToStorage();
   });
 
   document.getElementById('selectAssetStyle').addEventListener('change', e => {
     state.settings.assetStyle = e.target.value;
+    saveSettingsToStorage();
   });
 
   document.getElementById('inputFocusTheme').addEventListener('input', e => {
     state.settings.focusTheme = e.target.value;
+    saveSettingsToStorage();
   });
 
   // Batch Buttons
@@ -1845,6 +2042,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnBatchMetaOnly').addEventListener('click', () => {
     if (state.items.length === 0) return;
     runBatchQueue(state.items, item => runSingleVisionMeta(item), 'Gemini Vision Metadata');
+  });
+
+  document.getElementById('btnBatchIsolateBg')?.addEventListener('click', () => {
+    if (state.items.length === 0) return;
+    runBatchQueue(state.items, item => runSingleIsolateBg(item, { showSuccessToast: false }), 'Hapus Background');
   });
 
   document.getElementById('btnBatchVectorize').addEventListener('click', () => {
@@ -2113,7 +2315,11 @@ document.addEventListener('DOMContentLoaded', () => {
       applyCompareTransform();
     });
     inspectModalEl.addEventListener('hidden.bs.modal', () => {
-      syncActiveModalMetadata();
+      const item = syncActiveModalMetadata();
+      if (item?.isVectorized) {
+        rebuildVectorBlobs(item, { revokeOldUrls: true });
+        saveItemToDb(item);
+      }
       setMagicWandMode(false);
       resetZoom();
     });
@@ -2151,6 +2357,13 @@ document.addEventListener('DOMContentLoaded', () => {
     setPanMode(!state.isPanMode);
   });
 
+  document.getElementById('stageBgGroup')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-stage-bg]');
+    if (!btn) return;
+    applyStageBackground(btn.dataset.stageBg);
+    saveSettingsToStorage();
+  });
+
   document.getElementById('compareAfterImg').addEventListener('load', () => {
     if (state.compareZoom > 1) applyCompareTransform();
   });
@@ -2185,21 +2398,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (item) runSingleVisionMeta(item);
   });
 
-  document.getElementById('btnModalIsolateBg').addEventListener('click', async () => {
+  document.getElementById('btnModalIsolateBg').addEventListener('click', () => {
     const item = state.items.find(i => i.id === state.activeItemId);
-    if (!item) return;
-    try {
-      const srcUrl = item.upscaledUrl || item.isolatedUrl || item.previewUrl;
-      const iso = await isolateSubjectBackground(srcUrl, {
-        tolerance: state.settings.bgTolerance,
-        fillWhite: state.settings.bgMode === 'white',
-        removeInternalHoles: state.settings.removeInternalHoles
-      });
-      await applyIsolationResultToItem(item, iso);
-      showToast('Background Dihapus', 'Latar berhasil dibersihkan dengan edge matting.', 'success');
-    } catch (err) {
-      showToast('Gagal Hapus Background', err.message, 'danger');
-    }
+    if (item) runSingleIsolateBg(item, { showSuccessToast: true });
   });
 
   document.getElementById('btnModalMagicWand').addEventListener('click', () => {
@@ -2322,6 +2523,10 @@ document.addEventListener('DOMContentLoaded', () => {
       state.settings.keywordCount,
       item.isVectorized
     );
+    if (item.isVectorized) {
+      rebuildVectorBlobs(item, { revokeOldUrls: state.compareViewMode !== 'vector' });
+    }
+    saveItemToDb(item);
     renderInspectModal(item);
     refreshStatsAndGrid();
     showToast('Metadata Dibersihkan', 'Trademark, istilah teknis terlarang, dan duplikat telah dihapus.', 'success');
@@ -2334,6 +2539,51 @@ document.addEventListener('DOMContentLoaded', () => {
     downloadSingleAsset(item, embedXmp);
   });
 
+  function updateExportModalReadiness() {
+    const box = document.getElementById('exportReadinessSummary');
+    if (!box) return;
+    const csvFormat = state.exportCsvFormat || 'raster';
+    const readyOnly = document.getElementById('exportCheckReadyOnly')?.checked ?? true;
+    const r = computeExportReadiness(state.items, csvFormat);
+    const formatLabel = csvFormat === 'svg' ? 'SVG Vector' : csvFormat === 'eps' ? 'EPS Vector' : 'JPG/PNG Raster';
+
+    if (r.total === 0) {
+      box.className = 'p-3 rounded-2 border small mb-3 bg-light-info border-info-subtle';
+      box.textContent = 'Belum ada aset di antrean.';
+      return;
+    }
+
+    if (r.notReadyCount === 0 && r.missingMetaCount === 0) {
+      box.className = 'p-3 rounded-2 border small mb-3 bg-light-success border-success-subtle';
+    } else if (r.readyCount === 0) {
+      box.className = 'p-3 rounded-2 border small mb-3 bg-light-danger border-danger-subtle';
+    } else {
+      box.className = 'p-3 rounded-2 border small mb-3 bg-light-warning border-warning-subtle';
+    }
+
+    const notes = [];
+    if (csvFormat === 'raster' && r.below4MpCount > 0) {
+      notes.push(`${r.below4MpCount} aset di bawah 4 MP (perlu Upscale)`);
+    }
+    if (csvFormat !== 'raster' && r.missingVectorCount > 0) {
+      notes.push(`${r.missingVectorCount} aset belum dikonversi ke Vector`);
+    }
+    if (r.missingMetaCount > 0) {
+      notes.push(`${r.missingMetaCount} aset belum punya judul/metadata AI`);
+    }
+    if (readyOnly && r.notReadyCount > 0) {
+      notes.push(`${r.notReadyCount} aset yang belum siap akan dilewati dari CSV`);
+    } else if (!readyOnly && r.notReadyCount > 0) {
+      notes.push(`Filter nonaktif: seluruh ${r.total} baris tetap ditulis ke CSV`);
+    }
+
+    const detailHtml = notes.length > 0
+      ? `<ul class="mb-0 mt-1 ps-3">${notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul>`
+      : '<div class="mt-1">Semua aset memenuhi syarat resolusi, format, dan metadata.</div>';
+
+    box.innerHTML = `<div class="fw-semibold">${r.readyCount} dari ${r.total} aset siap untuk CSV (${formatLabel})</div>${detailHtml}`;
+  }
+
   // Export Modal Events
   document.getElementById('exportAgencyGroup').addEventListener('click', e => {
     const btn = e.target.closest('[data-agency]');
@@ -2341,6 +2591,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('#exportAgencyGroup .preset-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.exportAgency = btn.dataset.agency;
+    updateExportModalReadiness();
   });
 
   const exportCsvFormatGroup = document.getElementById('exportCsvFormatGroup');
@@ -2351,12 +2602,21 @@ document.addEventListener('DOMContentLoaded', () => {
       document.querySelectorAll('#exportCsvFormatGroup .preset-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       state.exportCsvFormat = btn.dataset.csvFormat;
+      updateExportModalReadiness();
     });
   }
 
+  document.getElementById('exportCheckReadyOnly')?.addEventListener('change', updateExportModalReadiness);
+
   document.getElementById('btnExportCsvOnly').addEventListener('click', () => {
     const csvFormat = state.exportCsvFormat || 'raster';
-    const csvContent = generateAgencyCsv(state.items, state.exportAgency, csvFormat);
+    const readyOnly = document.getElementById('exportCheckReadyOnly')?.checked ?? true;
+    const exportItems = filterExportableItems(state.items, csvFormat, readyOnly);
+    if (exportItems.length === 0) {
+      showToast('Tidak Ada Aset Siap', `Belum ada aset yang memenuhi syarat format ${csvFormat.toUpperCase()} untuk ditulis ke CSV.`, 'warning');
+      return;
+    }
+    const csvContent = generateAgencyCsv(exportItems, state.exportAgency, csvFormat);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2366,12 +2626,13 @@ document.addEventListener('DOMContentLoaded', () => {
     a.click();
     URL.revokeObjectURL(url);
     const label = csvFormat === 'svg' ? 'SVG Vector' : csvFormat === 'eps' ? 'EPS Vector' : 'JPG/PNG';
-    showToast('CSV Diunduh', `File CSV (${label}) format ${state.exportAgency.toUpperCase()} berhasil disimpan.`, 'success');
+    showToast('CSV Diunduh', `${exportItems.length} baris CSV (${label}) format ${state.exportAgency.toUpperCase()} berhasil disimpan.`, 'success');
   });
 
   document.getElementById('btnExportFullZip').addEventListener('click', async () => {
     if (state.items.length === 0 || typeof JSZip === 'undefined') return;
 
+    const readyOnly = document.getElementById('exportCheckReadyOnly')?.checked ?? true;
     const embedXmp = document.getElementById('exportCheckXmp').checked;
     const includeVectors = document.getElementById('exportCheckVectors').checked;
     const includeCsv = document.getElementById('exportCheckCsv').checked;
@@ -2401,6 +2662,7 @@ document.addEventListener('DOMContentLoaded', () => {
         folder.file(outFilename, arrBuf);
 
         if (includeVectors && item.isVectorized) {
+          syncVectorMetadataStrings(item);
           if (item.svgString) folder.file(`${baseName}_vector.svg`, item.svgString);
           if (item.epsString) folder.file(`${baseName}_vector.eps`, item.epsString);
         }
@@ -2412,12 +2674,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (includeCsv) {
         const csvFormat = state.exportCsvFormat || 'raster';
-        const csvContent = generateAgencyCsv(state.items, state.exportAgency, csvFormat);
-        const suffix = csvFormat === 'raster' ? '' : `_${csvFormat}`;
-        folder.file(`metadata_${state.exportAgency}${suffix}.csv`, csvContent);
+        const csvItems = filterExportableItems(state.items, csvFormat, readyOnly);
+        if (csvItems.length > 0) {
+          const csvContent = generateAgencyCsv(csvItems, state.exportAgency, csvFormat);
+          const suffix = csvFormat === 'raster' ? '' : `_${csvFormat}`;
+          folder.file(`metadata_${state.exportAgency}${suffix}.csv`, csvContent);
+        }
         if (csvFormat !== 'raster') {
-          const rasterCsv = generateAgencyCsv(state.items, state.exportAgency, 'raster');
-          folder.file(`metadata_${state.exportAgency}_raster.csv`, rasterCsv);
+          const rasterCsvItems = filterExportableItems(state.items, 'raster', readyOnly);
+          if (rasterCsvItems.length > 0) {
+            const rasterCsv = generateAgencyCsv(rasterCsvItems, state.exportAgency, 'raster');
+            folder.file(`metadata_${state.exportAgency}_raster.csv`, rasterCsv);
+          }
         }
       }
 

@@ -570,6 +570,55 @@ function applyBoundaryMatte(data, orig, newlyRemoved, fullMask, w, h, bg, tolera
   }
 }
 
+function autoCenterCutoutCanvas(srcCanvas, fillWhite, paddingRatio = 0.08) {
+  const w = srcCanvas.width;
+  const h = srcCanvas.height;
+  const ctx = srcCanvas.getContext('2d', { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, w, h).data;
+
+  let minX = w, minY = h, maxX = -1, maxY = -1, fgCount = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      const isFg = fillWhite
+        ? (data[idx] < 245 || data[idx + 1] < 245 || data[idx + 2] < 245)
+        : (data[idx + 3] >= 24);
+      if (isFg) {
+        fgCount++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (fgCount < 64 || maxX <= minX || maxY <= minY) return srcCanvas;
+
+  const objW = maxX - minX + 1;
+  const objH = maxY - minY + 1;
+  const maxContentW = Math.max(1, Math.round(w * (1 - paddingRatio * 2)));
+  const maxContentH = Math.max(1, Math.round(h * (1 - paddingRatio * 2)));
+  const fitScale = Math.min(1, maxContentW / objW, maxContentH / objH);
+  const drawW = Math.max(1, Math.round(objW * fitScale));
+  const drawH = Math.max(1, Math.round(objH * fitScale));
+  const dstX = Math.round((w - drawW) / 2);
+  const dstY = Math.round((h - drawH) / 2);
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = w;
+  outCanvas.height = h;
+  const outCtx = outCanvas.getContext('2d');
+  if (fillWhite) {
+    outCtx.fillStyle = '#FFFFFF';
+    outCtx.fillRect(0, 0, w, h);
+  }
+  outCtx.imageSmoothingEnabled = true;
+  outCtx.imageSmoothingQuality = 'high';
+  outCtx.drawImage(srcCanvas, minX, minY, objW, objH, dstX, dstY, drawW, drawH);
+  return outCanvas;
+}
+
 function renderCanvasToCutoutResult(canvas, fillWhite) {
   const mime = fillWhite ? 'image/jpeg' : 'image/png';
   return new Promise((resolve, reject) => {
@@ -598,6 +647,7 @@ export async function isolateSubjectBackground(sourceUrl, options = {}) {
   const tolerance = Math.max(5, Math.min(65, options.tolerance ?? 16));
   const fillWhite = options.fillWhite === true;
   const removeInternalHoles = options.removeInternalHoles === true;
+  const autoCenter = options.autoCenter === true;
   const img = typeof sourceUrl === 'string' ? await loadImageElement(sourceUrl) : sourceUrl;
 
   const w = img.naturalWidth || img.width;
@@ -676,7 +726,8 @@ export async function isolateSubjectBackground(sourceUrl, options = {}) {
 
   applyBoundaryMatte(data, orig, newlyRemoved, fullMask, w, h, bg, tolerance, fillWhite);
   ctx.putImageData(imgData, 0, 0);
-  return renderCanvasToCutoutResult(canvas, fillWhite);
+  const outCanvas = autoCenter ? autoCenterCutoutCanvas(canvas, fillWhite, 0.08) : canvas;
+  return renderCanvasToCutoutResult(outCanvas, fillWhite);
 }
 
 /**

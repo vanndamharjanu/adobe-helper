@@ -556,7 +556,7 @@ export function auditAdobeCompliance(item) {
     issues.push({
       severity: 'error',
       code: 'MISSING_METADATA',
-      message: 'Metadata belum di-generate. Klik tombol "Vision AI Meta" untuk menganalisis gambar.'
+      message: 'Metadata belum dibuat. Klik tombol "Buat Metadata AI" untuk menganalisis gambar.'
     });
     score -= 35;
     return { score: Math.max(0, score), issues };

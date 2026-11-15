@@ -235,6 +235,45 @@ export function getExportFilename(item, targetFormat = 'raster') {
   return `${baseName}_adobe_stock${ext}`;
 }
 
+export function isItemReadyForFormat(item, targetFormat = 'raster') {
+  if (!item) return false;
+  if (targetFormat === 'svg') {
+    return Boolean(item.isVectorized && item.svgString);
+  }
+  if (targetFormat === 'eps') {
+    return Boolean(item.isVectorized && item.epsString);
+  }
+  const mp = item.upscaledMegapixels || item.originalMegapixels || 0;
+  return mp >= 4.0;
+}
+
+export function filterExportableItems(items = [], targetFormat = 'raster', readyOnly = true) {
+  if (!readyOnly) return items;
+  return items.filter(item => isItemReadyForFormat(item, targetFormat));
+}
+
+export function computeExportReadiness(items = [], targetFormat = 'raster') {
+  const total = items.length;
+  const readyItems = filterExportableItems(items, targetFormat, true);
+  let below4MpCount = 0;
+  let missingVectorCount = 0;
+  let missingMetaCount = 0;
+  for (const item of items) {
+    const mp = item.upscaledMegapixels || item.originalMegapixels || 0;
+    if (mp < 4.0) below4MpCount++;
+    if (!item.isVectorized) missingVectorCount++;
+    if (!item.metadata || !item.metadata.title) missingMetaCount++;
+  }
+  return {
+    total,
+    readyCount: readyItems.length,
+    notReadyCount: Math.max(0, total - readyItems.length),
+    below4MpCount,
+    missingVectorCount,
+    missingMetaCount
+  };
+}
+
 export function generateAgencyCsv(items, agency = 'adobe', targetFormat = 'raster') {
   const rows = [];
   if (agency === 'adobe') {

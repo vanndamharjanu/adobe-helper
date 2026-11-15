@@ -91,16 +91,32 @@ function stockSVG(svg, unit = 1) {
 }
 
 /**
- * Injects Dublin Core RDF metadata (<title>, <desc>, <dc:subject>) into the SVG root
+ * Injects or updates Dublin Core RDF metadata (<title>, <desc>, <dc:subject>) inside the SVG root idempotently
  */
-function injectSvgMetadata(svg, metadata = {}) {
+export function injectSvgMetadata(svg, metadata = {}) {
+  const cleanSvg = String(svg || '').replace(
+    /(?:<title>[\s\S]*?<\/title>\s*)?(?:<desc>[\s\S]*?<\/desc>\s*)?(?:<metadata>[\s\S]*?<\/metadata>\s*)/i,
+    ''
+  );
   const safeTitle = escapeXml(metadata.title || 'Commercial Vector Illustration Asset');
   const safeDesc = escapeXml(metadata.description || safeTitle);
   const safeKeywords = escapeXml((metadata.keywords || []).join(', '));
 
   const metaBlock = `<title>${safeTitle}</title><desc>${safeDesc}</desc><metadata><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Description><dc:title>${safeTitle}</dc:title><dc:description>${safeDesc}</dc:description><dc:subject>${safeKeywords}</dc:subject></rdf:Description></rdf:RDF></metadata>`;
 
-  return svg.replace(/<svg\b[^>]*>/, match => `${match}${metaBlock}`);
+  return cleanSvg.replace(/<svg\b[^>]*>/, match => `${match}${metaBlock}`);
+}
+
+/**
+ * Updates %%Title and %%Keywords DSC comments in an existing EPS string without re-tracing paths
+ */
+export function updateEpsMetadata(epsString, metadata = {}) {
+  const safeTitle = String(metadata.title || 'Commercial Vector Asset').replace(/[()\\\r\n]/g, '_');
+  const kwText = Array.isArray(metadata.keywords) ? metadata.keywords.join(', ') : String(metadata.keywords || '');
+  const safeKeywords = kwText.replace(/[()\\\r\n]/g, ' ');
+  return String(epsString || '')
+    .replace(/^%%Title:.*$/m, () => `%%Title: ${safeTitle}`)
+    .replace(/^%%Keywords:.*$/m, () => `%%Keywords: ${safeKeywords}`);
 }
 
 /**

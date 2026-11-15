@@ -78,14 +78,14 @@ function preCleanSourceCanvas(canvas) {
   const src = imgData.data;
   const out = new Uint8ClampedArray(src);
 
-  // Detect if image has a predominantly white background from corners
+  // Detect if image has a predominantly white background from opaque corners
   const cornerCoords = [
     [1, 1], [w - 2, 1], [1, h - 2], [w - 2, h - 2]
   ];
   let whiteCorners = 0;
   for (const [cx, cy] of cornerCoords) {
     const idx = (Math.max(0, cy) * w + Math.max(0, cx)) * 4;
-    if (src[idx] > 238 && src[idx + 1] > 238 && src[idx + 2] > 238) {
+    if (src[idx + 3] >= 128 && src[idx] > 238 && src[idx + 1] > 238 && src[idx + 2] > 238) {
       whiteCorners++;
     }
   }
@@ -96,6 +96,7 @@ function preCleanSourceCanvas(canvas) {
     const row = y * w;
     for (let x = 2; x < w - 2; x++) {
       const idx = (row + x) * 4;
+      if (src[idx + 3] < 128) continue;
       const r0 = src[idx];
       const g0 = src[idx + 1];
       const b0 = src[idx + 2];
@@ -121,6 +122,7 @@ function preCleanSourceCanvas(canvas) {
         for (let dx = -2; dx <= 2; dx++) {
           if (dx === 0 && dy === 0) continue;
           const nIdx = (ny + x + dx) * 4;
+          if (src[nIdx + 3] < 128) continue;
           const nr = src[nIdx];
           const ng = src[nIdx + 1];
           const nb = src[nIdx + 2];
@@ -362,12 +364,240 @@ export async function upscaleImage(sourceUrl, origW, origH, settings = {}) {
   };
 }
 
+function colorDistRgb(r1, g1, b1, r2, g2, b2) {
+  const dr = r1 - r2;
+  const dg = g1 - g2;
+  const db = b1 - b2;
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function colorDistPct(r, g, b, bg) {
+  return (colorDistRgb(r, g, b, bg[0], bg[1], bg[2]) / 441.67) * 100;
+}
+
 /**
- * Smart Background Removal (Flood Fill from borders + Soft Edge Defringe)
+ * Finds the dominant background color along all 4 image edges via 4-bit color histogram
+ */
+function detectDominantBorderColor(data, w, h) {
+  const bins = new Map();
+  const samplePixel = (x, y) => {
+    const idx = (y * w + x) * 4;
+    if (data[idx + 3] < 128) return;
+    const key = ((data[idx] >> 4) << 8) | ((data[idx + 1] >> 4) << 4) | (data[idx + 2] >> 4);
+    let bin = bins.get(key);
+    if (!bin) {
+      bin = [0, 0, 0, 0];
+      bins.set(key, bin);
+    }
+    bin[0] += data[idx];
+    bin[1] += data[idx + 1];
+    bin[2] += data[idx + 2];
+    bin[3]++;
+  };
+
+  for (let x = 0; x < w; x++) {
+    samplePixel(x, 0);
+    if (h > 1) samplePixel(x, h - 1);
+  }
+  for (let y = 1; y < h - 1; y++) {
+    samplePixel(0, y);
+    if (w > 1) samplePixel(w - 1, y);
+  }
+
+  if (bins.size === 0) return [255, 255, 255];
+  let best = null;
+  for (const bin of bins.values()) {
+    if (!best || bin[3] > best[3]) best = bin;
+  }
+  return [
+    Math.round(best[0] / best[3]),
+    Math.round(best[1] / best[3]),
+    Math.round(best[2] / best[3])
+  ];
+}
+
+/**
+ * Clears newly removed pixels and decontaminates anti-aliased boundary pixels
+ * without leaking transparency into solid interior colors.
+ */
+function applyBoundaryMatte(data, orig, newlyRemoved, fullMask, w, h, bg, tolerance, fillWhite) {
+  const total = w * h;
+
+  // 1. Clear removed region first
+  for (let p = 0; p < total; p++) {
+    if (!newlyRemoved[p]) continue;
+    const idx = p * 4;
+    if (fillWhite) {
+      data[idx] = 255;
+      data[idx + 1] = 255;
+      data[idx + 2] = 255;
+      data[idx + 3] = 255;
+    } else {
+      data[idx] = 0;
+      data[idx + 1] = 0;
+      data[idx + 2] = 0;
+      data[idx + 3] = 0;
+    }
+  }
+
+  // 2. Decontaminate only the 1-2px boundary touching newlyRemoved
+  const band = [];
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const p = row + x;
+      if (fullMask[p] || orig[p * 4 + 3] < 128) continue;
+
+      let immediate = false;
+      let near = false;
+      for (let dy = -2; dy <= 2 && !immediate; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        const nRow = ny * w;
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w) continue;
+          if (newlyRemoved[nRow + nx]) {
+            near = true;
+            if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
+              immediate = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!near) continue;
+      if (immediate || colorDistPct(orig[p * 4], orig[p * 4 + 1], orig[p * 4 + 2], bg) <= tolerance * 1.4) {
+        band.push(p, immediate ? 1 : 0);
+      }
+    }
+  }
+
+  const updates = [];
+  for (let bIdx = 0; bIdx < band.length; bIdx += 2) {
+    const p = band[bIdx];
+    const isImmediate = band[bIdx + 1] === 1;
+    const x = p % w;
+    const y = (p - x) / w;
+    const i = p * 4;
+
+    const findBestFg = (radius) => {
+      let bestScore = -1;
+      let bestQ = -1;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        const nRow = ny * w;
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w) continue;
+          const q = nRow + nx;
+          if (fullMask[q] || orig[q * 4 + 3] < 128) continue;
+          const qi = q * 4;
+          const dist = colorDistRgb(orig[qi], orig[qi + 1], orig[qi + 2], bg[0], bg[1], bg[2]);
+          if (dist < 42) continue;
+          // Prefer strong contrast from bg while breaking ties by spatial proximity
+          const score = dist - (dx * dx + dy * dy) * 2;
+          if (score > bestScore) {
+            bestScore = score;
+            bestQ = q;
+          }
+        }
+      }
+      return bestQ;
+    };
+
+    let f = findBestFg(2);
+    if (f < 0) f = findBestFg(4);
+
+    if (f >= 0) {
+      const j = f * 4;
+      const vx = orig[j] - bg[0];
+      const vy = orig[j + 1] - bg[1];
+      const vz = orig[j + 2] - bg[2];
+      const vLenSq = vx * vx + vy * vy + vz * vz;
+      const cx = orig[i] - bg[0];
+      const cy = orig[i + 1] - bg[1];
+      const cz = orig[i + 2] - bg[2];
+      const a = Math.max(0, Math.min(1, (cx * vx + cy * vy + cz * vz) / vLenSq));
+
+      // Collinearity check prevents eating solid interior colors (e.g., gold next to brown outline)
+      const rx = cx - a * vx;
+      const ry = cy - a * vy;
+      const rz = cz - a * vz;
+      const perpDist = Math.sqrt(rx * rx + ry * ry + rz * rz);
+
+      if (perpDist <= 42 && a < 0.98) {
+        if (fillWhite) {
+          updates.push(
+            i,
+            Math.round(orig[j] * a + 255 * (1 - a)),
+            Math.round(orig[j + 1] * a + 255 * (1 - a)),
+            Math.round(orig[j + 2] * a + 255 * (1 - a)),
+            255
+          );
+        } else if (a < 0.04) {
+          updates.push(i, 0, 0, 0, 0);
+        } else {
+          updates.push(i, orig[j], orig[j + 1], orig[j + 2], Math.round(a * orig[i + 3]));
+        }
+      }
+    } else if (isImmediate) {
+      const distPct = colorDistPct(orig[i], orig[i + 1], orig[i + 2], bg);
+      if (distPct <= tolerance * 1.2) {
+        const a = Math.max(0, Math.min(1, distPct / (tolerance * 1.2)));
+        if (fillWhite) {
+          updates.push(
+            i,
+            Math.round(orig[i] * a + 255 * (1 - a)),
+            Math.round(orig[i + 1] * a + 255 * (1 - a)),
+            Math.round(orig[i + 2] * a + 255 * (1 - a)),
+            255
+          );
+        } else {
+          updates.push(i, orig[i], orig[i + 1], orig[i + 2], Math.round(a * orig[i + 3]));
+        }
+      }
+    }
+  }
+
+  for (let u = 0; u < updates.length; u += 5) {
+    const i = updates[u];
+    data[i] = updates[u + 1];
+    data[i + 1] = updates[u + 2];
+    data[i + 2] = updates[u + 3];
+    data[i + 3] = updates[u + 4];
+  }
+}
+
+function renderCanvasToCutoutResult(canvas, fillWhite) {
+  const mime = fillWhite ? 'image/jpeg' : 'image/png';
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      blob => {
+        if (!blob) return reject(new Error('Gagal mengekspor gambar hasil isolasi.'));
+        resolve({
+          changed: true,
+          blob,
+          url: URL.createObjectURL(blob),
+          width: canvas.width,
+          height: canvas.height,
+          isTransparent: !fillWhite
+        });
+      },
+      mime,
+      fillWhite ? 0.96 : undefined
+    );
+  });
+}
+
+/**
+ * Smart Background Removal (Border Histogram + Flood Fill + Optional Internal Holes + Edge Matting)
  */
 export async function isolateSubjectBackground(sourceUrl, options = {}) {
-  const tolerance = Math.max(5, Math.min(65, options.tolerance ?? 24));
-  const fillWhite = options.fillWhite === true; // True = pure #FFFFFF JPG, False = Transparent PNG
+  const tolerance = Math.max(5, Math.min(65, options.tolerance ?? 16));
+  const fillWhite = options.fillWhite === true;
+  const removeInternalHoles = options.removeInternalHoles === true;
   const img = typeof sourceUrl === 'string' ? await loadImageElement(sourceUrl) : sourceUrl;
 
   const w = img.naturalWidth || img.width;
@@ -381,34 +611,13 @@ export async function isolateSubjectBackground(sourceUrl, options = {}) {
 
   const imgData = ctx.getImageData(0, 0, w, h);
   const data = imgData.data;
+  const orig = new Uint8ClampedArray(data);
   const total = w * h;
 
-  // Sample 8 border points to detect background color
-  const sampleCoords = [
-    [0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1],
-    [Math.floor(w / 2), 0], [Math.floor(w / 2), h - 1],
-    [0, Math.floor(h / 2)], [w - 1, Math.floor(h / 2)]
-  ];
-  let rSum = 0, gSum = 0, bSum = 0;
-  for (const [sx, sy] of sampleCoords) {
-    const idx = (sy * w + sx) * 4;
-    rSum += data[idx];
-    gSum += data[idx + 1];
-    bSum += data[idx + 2];
-  }
-  const bgR = Math.round(rSum / sampleCoords.length);
-  const bgG = Math.round(gSum / sampleCoords.length);
-  const bgB = Math.round(bSum / sampleCoords.length);
-
-  const colorDistPct = (r, g, b) => {
-    const dr = r - bgR;
-    const dg = g - bgG;
-    const db = b - bgB;
-    return (Math.sqrt(dr * dr + dg * dg + db * db) / 441.67) * 100;
-  };
-
-  // Flood fill from border pixels
+  const bg = detectDominantBorderColor(orig, w, h);
   const visited = new Uint8Array(total);
+  const newlyRemoved = new Uint8Array(total);
+  const fullMask = new Uint8Array(total);
   const queue = new Int32Array(total);
   let head = 0, tail = 0;
 
@@ -416,74 +625,128 @@ export async function isolateSubjectBackground(sourceUrl, options = {}) {
     const p = y * w + x;
     if (visited[p] !== 0) return;
     const idx = p * 4;
-    if (colorDistPct(data[idx], data[idx + 1], data[idx + 2]) <= tolerance + 3) {
-      visited[p] = 2;
+    const isAlreadyAlpha = orig[idx + 3] < 128;
+    if (isAlreadyAlpha || colorDistPct(orig[idx], orig[idx + 1], orig[idx + 2], bg) <= tolerance) {
+      visited[p] = 1;
+      fullMask[p] = 1;
+      if (!isAlreadyAlpha) newlyRemoved[p] = 1;
       queue[tail++] = p;
     }
   };
 
   for (let x = 0; x < w; x++) {
     tryEnqueue(x, 0);
-    tryEnqueue(x, h - 1);
+    if (h > 1) tryEnqueue(x, h - 1);
   }
   for (let y = 1; y < h - 1; y++) {
     tryEnqueue(0, y);
-    tryEnqueue(w - 1, y);
+    if (w > 1) tryEnqueue(w - 1, y);
   }
 
   while (head < tail) {
     const p = queue[head++];
-    visited[p] = 1;
     const x = p % w;
     const y = (p - x) / w;
-
     if (x > 0) tryEnqueue(x - 1, y);
     if (x < w - 1) tryEnqueue(x + 1, y);
     if (y > 0) tryEnqueue(x, y - 1);
     if (y < h - 1) tryEnqueue(x, y + 1);
   }
 
-  // Apply alpha feathering & color decontamination on boundary pixels
-  const featherBand = Math.max(2, tolerance * 0.35);
-  for (let p = 0; p < total; p++) {
-    const idx = p * 4;
-    if (visited[p] === 1) {
-      if (fillWhite) {
-        data[idx] = 255;
-        data[idx + 1] = 255;
-        data[idx + 2] = 255;
-        data[idx + 3] = 255;
-      } else {
-        data[idx + 3] = 0;
+  if (removeInternalHoles) {
+    const holeTol = Math.max(5, tolerance * 0.9);
+    for (let p = 0; p < total; p++) {
+      if (visited[p]) continue;
+      const idx = p * 4;
+      if (orig[idx + 3] < 128) {
+        fullMask[p] = 1;
+        continue;
       }
-    } else {
-      const dist = colorDistPct(data[idx], data[idx + 1], data[idx + 2]);
-      if (dist < tolerance + featherBand && dist > tolerance - featherBand) {
-        const alphaFactor = Math.max(0, Math.min(1, (dist - (tolerance - featherBand)) / (featherBand * 2)));
-        if (fillWhite) {
-          data[idx] = Math.round(data[idx] * alphaFactor + 255 * (1 - alphaFactor));
-          data[idx + 1] = Math.round(data[idx + 1] * alphaFactor + 255 * (1 - alphaFactor));
-          data[idx + 2] = Math.round(data[idx + 2] * alphaFactor + 255 * (1 - alphaFactor));
-        } else {
-          data[idx + 3] = Math.round(data[idx + 3] * alphaFactor);
-        }
+      if (colorDistPct(orig[idx], orig[idx + 1], orig[idx + 2], bg) <= holeTol) {
+        visited[p] = 1;
+        fullMask[p] = 1;
+        newlyRemoved[p] = 1;
       }
+    }
+  } else {
+    for (let p = 0; p < total; p++) {
+      if (!fullMask[p] && orig[p * 4 + 3] < 128) fullMask[p] = 1;
     }
   }
 
+  applyBoundaryMatte(data, orig, newlyRemoved, fullMask, w, h, bg, tolerance, fillWhite);
   ctx.putImageData(imgData, 0, 0);
-  const mime = fillWhite ? 'image/jpeg' : 'image/png';
-  const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Gagal mengekspor gambar hasil isolasi.'))), mime, fillWhite ? 0.96 : undefined);
-  });
+  return renderCanvasToCutoutResult(canvas, fillWhite);
+}
 
-  return {
-    blob,
-    url: URL.createObjectURL(blob),
-    width: w,
-    height: h,
-    isTransparent: !fillWhite
+/**
+ * Interactive Magic Wand: Flood-erases the connected color region at (startX, startY)
+ * and cleanly decontaminates only the newly created cutout edges.
+ */
+export async function eraseBackgroundAtPoint(sourceUrl, startX, startY, options = {}) {
+  const tolerance = Math.max(5, Math.min(65, options.tolerance ?? 16));
+  const fillWhite = options.fillWhite === true;
+  const img = typeof sourceUrl === 'string' ? await loadImageElement(sourceUrl) : sourceUrl;
+
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  const sx = Math.max(0, Math.min(w - 1, Math.round(startX)));
+  const sy = Math.max(0, Math.min(h - 1, Math.round(startY)));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
+  const orig = new Uint8ClampedArray(data);
+  const total = w * h;
+
+  const startIdx = (sy * w + sx) * 4;
+  if (orig[startIdx + 3] < 128) {
+    return { changed: false };
+  }
+
+  const targetBg = [orig[startIdx], orig[startIdx + 1], orig[startIdx + 2]];
+  const newlyRemoved = new Uint8Array(total);
+  const fullMask = new Uint8Array(total);
+  for (let p = 0; p < total; p++) {
+    if (orig[p * 4 + 3] < 128) fullMask[p] = 1;
+  }
+
+  const queue = new Int32Array(total);
+  let head = 0, tail = 0;
+  const startP = sy * w + sx;
+  newlyRemoved[startP] = 1;
+  fullMask[startP] = 1;
+  queue[tail++] = startP;
+
+  const tryEnqueue = (x, y) => {
+    const p = y * w + x;
+    if (fullMask[p]) return;
+    const idx = p * 4;
+    if (colorDistPct(orig[idx], orig[idx + 1], orig[idx + 2], targetBg) <= tolerance) {
+      newlyRemoved[p] = 1;
+      fullMask[p] = 1;
+      queue[tail++] = p;
+    }
   };
+
+  while (head < tail) {
+    const p = queue[head++];
+    const x = p % w;
+    const y = (p - x) / w;
+    if (x > 0) tryEnqueue(x - 1, y);
+    if (x < w - 1) tryEnqueue(x + 1, y);
+    if (y > 0) tryEnqueue(x, y - 1);
+    if (y < h - 1) tryEnqueue(x, y + 1);
+  }
+
+  applyBoundaryMatte(data, orig, newlyRemoved, fullMask, w, h, targetBg, tolerance, fillWhite);
+  ctx.putImageData(imgData, 0, 0);
+  return renderCanvasToCutoutResult(canvas, fillWhite);
 }
 
 /**

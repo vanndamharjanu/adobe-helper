@@ -446,6 +446,7 @@ export async function convertImageToVector(sourceUrl, options = {}) {
   const workerSettings = {
     mode: options.mode || 'auto',
     removeBackground: !!options.removeBackground,
+    removeInternalHoles: !!options.removeInternalHoles,
     texture: 'clean',
     quality: 'accurate',
     geometry: options.geometry !== false,

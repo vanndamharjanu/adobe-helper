@@ -10,31 +10,29 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
-  <link href="./css/style.css?v=20261029_03" rel="stylesheet" />
+  <link href="./css/style.css?v=20261115_05" rel="stylesheet" />
 </head>
 <body>
 
   <!-- Top Navigation -->
   <header class="app-navbar py-2 px-3 px-lg-4">
-    <div class="container-fluid d-flex flex-wrap align-items-center justify-content-between gap-2" style="max-width: 1540px;">
-      <div class="d-flex align-items-center gap-3 flex-wrap">
-        <div class="d-flex align-items-center gap-2">
-          <span class="brand-dot"></span>
-          <h1 class="h6 mb-0 fw-bold text-navy">Microstock Helper</h1>
-        </div>
-
-        <!-- Main Page Switcher -->
-        <div class="nav-page-switch" id="mainPageSwitch">
-          <button type="button" class="nav-page-btn active" data-page="studio">
-            Studio Gambar
-          </button>
-          <button type="button" class="nav-page-btn" data-page="niche">
-            Niche &amp; Prompt
-          </button>
-        </div>
+    <div class="container-fluid d-flex flex-wrap align-items-center justify-content-between gap-2 gap-md-3" style="max-width: 1540px;">
+      <div class="d-flex align-items-center gap-2 order-1">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <h1 class="h6 mb-0 fw-bold text-navy">Microstock Helper</h1>
       </div>
 
-      <div class="d-flex align-items-center gap-2">
+      <!-- Main Page Switcher -->
+      <nav class="nav-page-switch order-3 order-md-2 me-md-auto" id="mainPageSwitch" aria-label="Navigasi Halaman">
+        <button type="button" class="nav-page-btn active" data-page="studio">
+          Studio Gambar
+        </button>
+        <button type="button" class="nav-page-btn" data-page="niche">
+          Niche &amp; Prompt
+        </button>
+      </nav>
+
+      <div class="d-flex align-items-center flex-wrap gap-2 order-2 ms-auto order-md-3 ms-md-0">
         <button type="button" id="btnOpenApiModal" class="btn btn-sm bg-light-warning border border-warning-subtle">
           <span id="apiKeyStatusBadge" class="fw-medium">API Key</span>
         </button>
@@ -77,14 +75,14 @@
 
             <div id="uploadDropzone" class="upload-dropzone mb-2">
               <input type="file" id="fileInput" multiple accept="image/jpeg,image/png,image/webp" class="d-none" />
-              <i class="bi bi-upload text-primary fs-5 d-block mb-1"></i>
+              <i class="bi bi-upload text-primary fs-5 d-block mb-1" aria-hidden="true"></i>
               <div class="fw-semibold text-navy small">Pilih atau tarik gambar ke sini</div>
               <div class="text-muted" style="font-size: 0.75rem;">JPG, PNG, WEBP</div>
             </div>
 
-            <div class="d-flex align-items-center justify-content-between pt-1">
+            <div class="d-flex align-items-center justify-content-between gap-2 pt-1">
               <span class="text-muted" style="font-size: 0.78rem;">Belum punya file?</span>
-              <button type="button" id="btnLoadSamples" class="btn btn-sm btn-link text-decoration-none p-0 fw-semibold">
+              <button type="button" id="btnLoadSamples" class="btn btn-sm btn-link text-decoration-none px-1 py-1 fw-semibold">
                 Muat 3 sampel
               </button>
             </div>
@@ -144,7 +142,7 @@
                 </div>
 
                 <div class="mb-3">
-                  <label class="small fw-semibold text-navy d-block mb-1">Karakter Gambar</label>
+                  <label for="selectUpscaleProfile" class="small fw-semibold text-navy d-block mb-1">Karakter Gambar</label>
                   <select id="selectUpscaleProfile" class="form-select form-select-sm">
                     <option value="ai-photorealistic" selected>Fotorealistis / 3D</option>
                     <option value="ai-illustration">Ilustrasi / Flat Art</option>
@@ -211,13 +209,19 @@
                   <div id="bgToleranceBox" class="d-none pt-1">
                     <div class="d-flex justify-content-between small mb-1">
                       <span class="text-muted">Toleransi Tepi</span>
-                      <span id="labelBgTolerance" class="font-monospace">24%</span>
+                      <span id="labelBgTolerance" class="font-monospace">16%</span>
                     </div>
-                    <input type="range" id="rangeBgTolerance" class="form-range" min="8" max="55" step="2" value="24" />
+                    <input type="range" id="rangeBgTolerance" class="form-range" min="5" max="55" step="1" value="16" />
                     <select id="selectBgMode" class="form-select form-select-sm mt-1">
                       <option value="transparent" selected>PNG Transparan</option>
                       <option value="white">JPG Putih (#FFFFFF)</option>
                     </select>
+                    <div class="form-check mt-2">
+                      <input class="form-check-input" type="checkbox" id="checkRemoveInternalHoles" />
+                      <label class="form-check-label small text-muted" for="checkRemoveInternalHoles">
+                        Hapus semua lubang putih dalam
+                      </label>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -375,9 +379,9 @@
                   Setiap tema berisi 3 subjek/objek berbeda dengan sudut pandang anti-pasaran agar aman kurasi Adobe Stock
                 </div>
               </div>
-              <div class="d-flex align-items-center gap-1">
-                <span class="text-muted" style="font-size: 0.76rem;">Patokan bulan:</span>
-                <select id="selectNicheBaseMonth" class="form-select form-select-sm py-0 ps-2 pe-4" style="width: auto; height: 28px; font-size: 0.78rem;"></select>
+              <div class="d-flex flex-wrap align-items-center gap-2">
+                <label for="selectNicheBaseMonth" class="text-muted mb-0" style="font-size: 0.78rem;">Patokan bulan:</label>
+                <select id="selectNicheBaseMonth" class="form-select form-select-sm" style="width: auto; font-size: 0.8rem;"></select>
               </div>
             </div>
             <div class="niche-horizon-grid" id="nicheHorizonGroup">
@@ -397,7 +401,7 @@
           </div>
 
           <div class="col-12 col-lg-5">
-            <label class="small fw-semibold text-navy d-block mb-1">Topik Apapun (Bebas Ketik)</label>
+            <label for="inputCustomNicheTopic" class="small fw-semibold text-navy d-block mb-1">Topik Apapun (Bebas Ketik)</label>
             <div class="input-group input-group-sm">
               <input type="text" id="inputCustomNicheTopic" class="form-control bg-white" placeholder="Contoh: Natal, Mobil, Gunung, Olahraga, Kantor..." />
               <button type="button" id="btnGenerateCustomPrompt" class="btn btn-brand px-3">
@@ -418,27 +422,27 @@
   <div class="modal fade text-start text-wrap" id="inspectModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-fullscreen-sm-down modal-dialog-centered modal-dialog-scrollable">
       <div class="modal-content border-0 shadow rounded-3 overflow-hidden">
-        <div class="modal-header bg-white border-bottom py-2 py-md-3 px-3 px-md-4 d-flex align-items-center justify-content-between">
-          <div class="min-w-0 pe-2 flex-grow-1">
+        <div class="modal-header bg-white border-bottom py-2 py-md-3 px-3 px-md-4 d-flex flex-wrap align-items-start align-items-sm-center justify-content-between gap-2">
+          <div class="min-w-0 flex-grow-1 order-1">
+            <h5 class="modal-title h6 fw-bold text-navy mb-1 text-break" id="modalAssetFilename">filename.jpg</h5>
             <div class="d-flex align-items-center gap-2 flex-wrap">
-              <h5 class="modal-title h6 fw-bold text-navy mb-0 text-break" id="modalAssetFilename">filename.jpg</h5>
               <span id="modalResBadge" class="badge bg-light-success font-monospace">8.60 MP</span>
               <span id="modalQcScoreBadge" class="badge bg-light-primary">Skor QC: 100/100</span>
             </div>
           </div>
-          <div class="d-flex align-items-center gap-2 flex-shrink-0 ms-2">
-            <div class="d-flex align-items-center gap-1">
-              <button type="button" id="btnModalPrev" class="btn btn-sm btn-outline-secondary py-1 px-2 d-flex align-items-center gap-1" title="Gambar Sebelumnya (Panah Kiri ←)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
-                <span class="d-none d-sm-inline small">Prev</span>
+          <button type="button" class="btn-close flex-shrink-0 order-2 order-sm-3 ms-2" data-bs-dismiss="modal" aria-label="Tutup Modal"></button>
+          <div class="d-flex align-items-center justify-content-between justify-content-sm-end gap-2 order-3 order-sm-2 w-100 w-sm-auto mt-1 mt-sm-0">
+            <div class="d-flex align-items-center gap-2 w-100 w-sm-auto justify-content-between justify-content-sm-end">
+              <button type="button" id="btnModalPrev" class="btn btn-sm btn-outline-secondary py-1 px-2 d-flex align-items-center gap-1" title="Gambar Sebelumnya (Panah Kiri)" aria-label="Gambar Sebelumnya">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                <span class="small">Prev</span>
               </button>
               <span id="modalAssetCounter" class="badge bg-light text-navy border font-monospace px-2 py-1" style="font-size: 0.78rem;">- / -</span>
-              <button type="button" id="btnModalNext" class="btn btn-sm btn-outline-secondary py-1 px-2 d-flex align-items-center gap-1" title="Gambar Selanjutnya (Panah Kanan →)">
-                <span class="d-none d-sm-inline small">Next</span>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+              <button type="button" id="btnModalNext" class="btn btn-sm btn-outline-secondary py-1 px-2 d-flex align-items-center gap-1" title="Gambar Selanjutnya (Panah Kanan)" aria-label="Gambar Selanjutnya">
+                <span class="small">Next</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
               </button>
             </div>
-            <button type="button" class="btn-close ms-1" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
         </div>
 
@@ -451,10 +455,21 @@
                   <button type="button" id="btnViewRasterMode" class="btn btn-dark active">Upscale</button>
                   <button type="button" id="btnViewVectorMode" class="btn btn-outline-dark">Vector (.SVG)</button>
                 </div>
-                <div class="btn-group btn-group-sm" role="group" id="zoomBtnGroup">
-                  <button type="button" class="btn btn-outline-secondary active" data-zoom="1">1x</button>
-                  <button type="button" class="btn btn-outline-secondary" data-zoom="2">2x</button>
-                  <button type="button" class="btn btn-outline-secondary" data-zoom="3.5">3.5x</button>
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                  <button type="button" id="btnComparePan" class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-1" disabled title="Pilih zoom 2x atau 3.5x untuk menggeser gambar" aria-label="Mode Tangan Geser Gambar" aria-pressed="false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"></path>
+                      <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"></path>
+                      <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"></path>
+                      <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"></path>
+                    </svg>
+                    <span>Geser</span>
+                  </button>
+                  <div class="btn-group btn-group-sm" role="group" id="zoomBtnGroup" aria-label="Level Zoom">
+                    <button type="button" class="btn btn-outline-secondary active" data-zoom="1">1x</button>
+                    <button type="button" class="btn btn-outline-secondary" data-zoom="2">2x</button>
+                    <button type="button" class="btn btn-outline-secondary" data-zoom="3.5">3.5x</button>
+                  </div>
                 </div>
               </div>
 
@@ -473,10 +488,10 @@
 
                 <!-- Floating Navigation Arrows -->
                 <button type="button" id="btnStagePrev" class="stage-nav-arrow stage-nav-prev" title="Gambar Sebelumnya (←)" aria-label="Gambar Sebelumnya">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>
                 </button>
                 <button type="button" id="btnStageNext" class="stage-nav-arrow stage-nav-next" title="Gambar Selanjutnya (→)" aria-label="Gambar Selanjutnya">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </button>
               </div>
 
@@ -503,30 +518,67 @@
                   </button>
                 </div>
                 <div class="col-12">
-                  <div class="p-2.5 rounded-2 border bg-light">
-                    <div class="d-flex align-items-center justify-content-between mb-2">
-                      <span class="small fw-semibold text-navy"><i class="bi bi-grid-3x3 me-1 text-primary"></i>Pecah Grid Gambar</span>
-                      <span class="text-muted" style="font-size:0.75rem;">Potong otomatis &amp; rapi ke antrean</span>
+                  <div class="p-3 rounded-2 border bg-light">
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                      <span class="small fw-semibold text-navy">Cutout &amp; Lubang Background</span>
+                      <div class="d-flex flex-wrap gap-2">
+                        <button type="button" id="btnModalMagicWand" class="btn btn-sm btn-outline-primary py-1 px-2" title="Aktifkan mode klik langsung pada area putih di preview untuk melubangi">
+                          <i class="bi bi-magic me-1" aria-hidden="true"></i>Klik Hapus Area
+                        </button>
+                        <button type="button" id="btnModalUndoBg" class="btn btn-sm btn-outline-secondary py-1 px-2" disabled title="Batalkan perubahan Hapus Background terakhir">
+                          Undo
+                        </button>
+                      </div>
+                    </div>
+                    <div class="row g-3 align-items-end">
+                      <div class="col-12 col-sm-7">
+                        <div class="d-flex justify-content-between align-items-center mb-1" style="font-size: 0.78rem;">
+                          <label for="rangeModalBgTolerance" class="text-muted mb-0">Toleransi Tepi</label>
+                          <span id="labelModalBgTolerance" class="font-monospace fw-semibold text-navy">16%</span>
+                        </div>
+                        <input type="range" id="rangeModalBgTolerance" class="form-range" min="5" max="55" step="1" value="16" />
+                      </div>
+                      <div class="col-12 col-sm-5">
+                        <label for="selectModalBgMode" class="form-label text-muted mb-1" style="font-size: 0.78rem;">Format Output</label>
+                        <select id="selectModalBgMode" class="form-select form-select-sm">
+                          <option value="transparent" selected>PNG Transparan</option>
+                          <option value="white">JPG Putih (#FFFFFF)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="form-check mt-3 mb-0">
+                      <input class="form-check-input" type="checkbox" id="checkModalInternalHoles" />
+                      <label class="form-check-label text-muted" style="font-size: 0.78rem;" for="checkModalInternalHoles">
+                        Hapus semua lubang putih dalam (jangan centang jika objek punya bagian putih seperti bulu/mata)
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-12">
+                  <div class="p-3 rounded-2 border bg-light">
+                    <div class="d-flex flex-column flex-sm-row align-items-start align-items-sm-center justify-content-between gap-1 mb-3">
+                      <span class="small fw-semibold text-navy"><i class="bi bi-grid-3x3 me-1 text-primary" aria-hidden="true"></i>Pecah Grid Gambar</span>
+                      <span class="text-muted" style="font-size: 0.78rem;">Potong otomatis &amp; rapi ke antrean</span>
                     </div>
                     <div class="row g-2">
                       <div class="col-6 col-sm-3">
-                        <button type="button" id="btnModalSplit2x2" class="btn btn-sm btn-outline-dark bg-white w-100 py-1.5 px-2 text-nowrap" title="Pecah Grid 2×2 (4 Gambar)">
-                          <i class="bi bi-grid me-1 text-primary"></i><strong>2×2</strong> (4)
+                        <button type="button" id="btnModalSplit2x2" class="btn btn-sm btn-outline-dark bg-white w-100 py-2 px-2 text-nowrap" title="Pecah Grid 2×2 (4 Gambar)">
+                          <i class="bi bi-grid me-1 text-primary" aria-hidden="true"></i><strong>2×2</strong>&nbsp;(4)
                         </button>
                       </div>
                       <div class="col-6 col-sm-3">
-                        <button type="button" id="btnModalSplit3x3" class="btn btn-sm btn-outline-dark bg-white w-100 py-1.5 px-2 text-nowrap" title="Pecah Grid 3×3 (9 Gambar)">
-                          <i class="bi bi-grid-3x3-gap me-1 text-primary"></i><strong>3×3</strong> (9)
+                        <button type="button" id="btnModalSplit3x3" class="btn btn-sm btn-outline-dark bg-white w-100 py-2 px-2 text-nowrap" title="Pecah Grid 3×3 (9 Gambar)">
+                          <i class="bi bi-grid-3x3-gap me-1 text-primary" aria-hidden="true"></i><strong>3×3</strong>&nbsp;(9)
                         </button>
                       </div>
                       <div class="col-6 col-sm-3">
-                        <button type="button" id="btnModalSplit2x3" class="btn btn-sm btn-outline-dark bg-white w-100 py-1.5 px-2 text-nowrap" title="Pecah Grid 2 kolom × 3 baris (6 Gambar)">
-                          <i class="bi bi-columns me-1 text-primary"></i><strong>2×3</strong> (6)
+                        <button type="button" id="btnModalSplit2x3" class="btn btn-sm btn-outline-dark bg-white w-100 py-2 px-2 text-nowrap" title="Pecah Grid 2 kolom × 3 baris (6 Gambar)">
+                          <i class="bi bi-columns me-1 text-primary" aria-hidden="true"></i><strong>2×3</strong>&nbsp;(6)
                         </button>
                       </div>
                       <div class="col-6 col-sm-3">
-                        <button type="button" id="btnModalSplit3x2" class="btn btn-sm btn-outline-dark bg-white w-100 py-1.5 px-2 text-nowrap" title="Pecah Grid 3 kolom × 2 baris (6 Gambar)">
-                          <i class="bi bi-layout-three-columns me-1 text-primary"></i><strong>3×2</strong> (6)
+                        <button type="button" id="btnModalSplit3x2" class="btn btn-sm btn-outline-dark bg-white w-100 py-2 px-2 text-nowrap" title="Pecah Grid 3 kolom × 2 baris (6 Gambar)">
+                          <i class="bi bi-layout-three-columns me-1 text-primary" aria-hidden="true"></i><strong>3×2</strong>&nbsp;(6)
                         </button>
                       </div>
                     </div>
@@ -538,7 +590,7 @@
 
               <!-- Vector Download Box -->
               <div id="modalVectorBox" class="p-3 rounded-2 bg-light border mb-3 d-none">
-                <div class="d-flex justify-content-between align-items-center mb-2">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
                   <strong class="small text-navy">File Vector Siap</strong>
                   <span id="modalVectorStats" class="badge bg-white text-navy border font-monospace">0 kurva</span>
                 </div>
@@ -568,16 +620,16 @@
               <div class="d-flex flex-column gap-3">
 
                 <div>
-                  <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="small fw-semibold text-navy">Title (Inggris)</label>
+                  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">
+                    <label for="modalInputTitle" class="small fw-semibold text-navy">Title (Inggris)</label>
                     <span id="modalTitleCharCount" class="font-monospace small text-muted">0 / 130</span>
                   </div>
                   <input type="text" id="modalInputTitle" class="form-control form-control-sm" placeholder="Objek &amp; Aksi + Gaya Visual + for Solusi Pembeli..." />
                 </div>
 
                 <div>
-                  <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="small fw-semibold text-navy">Deskripsi</label>
+                  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">
+                    <label for="modalInputDesc" class="small fw-semibold text-navy">Deskripsi</label>
                     <span id="modalDescCharCount" class="font-monospace small text-muted">0 / 200</span>
                   </div>
                   <textarea id="modalInputDesc" rows="2" class="form-control form-control-sm" placeholder="Deskripsi singkat aset..."></textarea>
@@ -585,11 +637,11 @@
 
                 <div class="row g-2">
                   <div class="col-12 col-sm-6">
-                    <label class="small fw-semibold text-navy d-block mb-1">Kategori</label>
+                    <label for="modalSelectCategory" class="small fw-semibold text-navy d-block mb-1">Kategori</label>
                     <select id="modalSelectCategory" class="form-select form-select-sm"></select>
                   </div>
                   <div class="col-12 col-sm-6">
-                    <label class="small fw-semibold text-navy d-block mb-1">Properti AI</label>
+                    <span class="small fw-semibold text-navy d-block mb-1">Properti AI</span>
                     <div class="form-check mt-2">
                       <input class="form-check-input" type="checkbox" id="modalCheckFictional" />
                       <label class="form-check-label small" for="modalCheckFictional">
@@ -601,16 +653,16 @@
 
                 <!-- Keywords -->
                 <div>
-                  <div class="d-flex justify-content-between align-items-center mb-1">
-                    <div>
-                      <label class="small fw-semibold text-navy mb-0">Keywords</label>
-                      <span id="modalKwCountBadge" class="badge bg-light-primary font-monospace ms-1">0 / 49</span>
+                  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                    <div class="d-flex align-items-center gap-1">
+                      <label for="modalInputAddKw" class="small fw-semibold text-navy mb-0">Keywords</label>
+                      <span id="modalKwCountBadge" class="badge bg-light-primary font-monospace">0 / 49</span>
                     </div>
-                    <div class="d-flex gap-1">
-                      <button type="button" id="btnCopyKeywords" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 0.76rem;">
+                    <div class="d-flex gap-2">
+                      <button type="button" id="btnCopyKeywords" class="btn btn-sm btn-outline-secondary py-1 px-2" style="font-size: 0.78rem;">
                         Salin
                       </button>
-                      <button type="button" id="btnScrubKeywords" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.76rem;">
+                      <button type="button" id="btnScrubKeywords" class="btn btn-sm btn-outline-primary py-1 px-2" style="font-size: 0.78rem;">
                         Bersihkan
                       </button>
                     </div>
@@ -621,7 +673,7 @@
                     <button type="button" id="btnModalAddKw" class="btn btn-outline-primary">Tambah</button>
                   </div>
 
-                  <div id="modalKeywordsContainer" class="p-2 rounded-2 border bg-light d-flex flex-wrap gap-1 overflow-auto" style="max-height: 210px;"></div>
+                  <div id="modalKeywordsContainer" class="p-2 rounded-2 border bg-light d-flex flex-wrap gap-2 overflow-auto" style="max-height: 210px;"></div>
                 </div>
 
               </div>
@@ -629,16 +681,16 @@
           </div>
         </div>
 
-        <div class="modal-footer bg-light border-top py-2 px-3 px-md-4 d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center justify-content-between gap-2">
+        <div class="modal-footer bg-light border-top py-3 py-sm-2 px-3 px-md-4 d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center justify-content-between gap-2">
           <div class="form-check mb-0">
             <input class="form-check-input" type="checkbox" id="modalCheckEmbedXmp" checked />
             <label class="form-check-label small fw-medium text-navy" for="modalCheckEmbedXmp">
               Sematkan XMP langsung ke file
             </label>
           </div>
-          <div class="d-flex gap-2 justify-content-end">
-            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Tutup</button>
-            <button type="button" id="btnModalDownloadAsset" class="btn btn-sm btn-brand px-3">
+          <div class="d-flex gap-2 justify-content-stretch justify-content-sm-end">
+            <button type="button" class="btn btn-sm btn-outline-secondary flex-fill flex-sm-grow-0" data-bs-dismiss="modal">Tutup</button>
+            <button type="button" id="btnModalDownloadAsset" class="btn btn-sm btn-brand px-3 flex-fill flex-sm-grow-0">
               Download File
             </button>
           </div>
@@ -651,11 +703,11 @@
   <div class="modal fade text-start text-wrap" id="apiKeyModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content border-0 shadow rounded-3">
-        <div class="modal-header bg-white border-bottom py-3 px-4">
+        <div class="modal-header bg-white border-bottom py-3 px-3 px-sm-4">
           <h5 class="modal-title h6 fw-bold text-navy mb-0">Pengaturan API Key Gemini</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup Modal"></button>
         </div>
-        <div class="modal-body p-4">
+        <div class="modal-body p-3 p-sm-4">
           <div class="p-3 rounded-2 bg-light-primary border border-primary-subtle small mb-3">
             <div class="fw-semibold text-navy mb-1">Info Kuota &amp; Pemakaian Token</div>
             <div class="text-muted mb-2">
@@ -668,8 +720,8 @@
           </div>
 
           <div class="mb-3">
-            <div class="d-flex justify-content-between align-items-center mb-1">
-              <label class="small fw-semibold text-navy">Google AI Studio API Key</label>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-1 mb-1">
+              <label for="inputGeminiKeys" class="small fw-semibold text-navy">Google AI Studio API Key</label>
               <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" class="small fw-semibold text-decoration-none">
                 Dapatkan Key Gratis &rarr;
               </a>
@@ -678,7 +730,7 @@
           </div>
 
           <div class="mb-3">
-            <label class="small fw-semibold text-navy d-block mb-1">Model Vision</label>
+            <label for="selectGeminiModel" class="small fw-semibold text-navy d-block mb-1">Model Vision</label>
             <select id="selectGeminiModel" class="form-select form-select-sm">
               <option value="gemini-3.8-flash" selected>Gemini 3.8 Flash (Cepat &amp; Akurat)</option>
               <option value="gemini-3.8-pro">Gemini 3.8 Pro</option>
@@ -688,7 +740,7 @@
 
           <div id="apiTestResultBox" class="small d-none"></div>
         </div>
-        <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between">
+        <div class="modal-footer bg-light border-top py-2 px-3 px-sm-4 d-flex flex-wrap gap-2 justify-content-between">
           <button type="button" id="btnTestApiKey" class="btn btn-sm btn-outline-primary">
             Tes Koneksi
           </button>
@@ -705,25 +757,25 @@
   <div class="modal fade text-start text-wrap" id="exportModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content border-0 shadow rounded-3">
-        <div class="modal-header bg-white border-bottom py-3 px-4">
+        <div class="modal-header bg-white border-bottom py-3 px-3 px-sm-4">
           <h5 class="modal-title h6 fw-bold text-navy mb-0">Export Paket (ZIP / CSV)</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup Modal"></button>
         </div>
-        <div class="modal-body p-4">
+        <div class="modal-body p-3 p-sm-4">
           <div class="mb-3">
-            <label class="small fw-semibold text-navy d-block mb-2">Agensi Tujuan</label>
+            <span class="small fw-semibold text-navy d-block mb-2">Agensi Tujuan</span>
             <div class="row g-2" id="exportAgencyGroup">
-              <div class="col-4">
+              <div class="col-12 col-sm-4">
                 <button type="button" class="preset-btn active text-center" data-agency="adobe">
                   <div class="fw-bold text-navy small">Adobe Stock</div>
                 </button>
               </div>
-              <div class="col-4">
+              <div class="col-12 col-sm-4">
                 <button type="button" class="preset-btn text-center" data-agency="shutterstock">
                   <div class="fw-bold text-navy small">Shutterstock</div>
                 </button>
               </div>
-              <div class="col-4">
+              <div class="col-12 col-sm-4">
                 <button type="button" class="preset-btn text-center" data-agency="freepik">
                   <div class="fw-bold text-navy small">Freepik</div>
                 </button>
@@ -733,27 +785,27 @@
 
           <!-- Target Format CSV -->
           <div class="mb-3">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <label class="small fw-semibold text-navy mb-0">Format Target di CSV</label>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-1 mb-2">
+              <span class="small fw-semibold text-navy mb-0">Format Target di CSV</span>
               <span class="text-muted" style="font-size:0.75rem;">Ekstensi kolom Filename</span>
             </div>
             <div class="row g-2" id="exportCsvFormatGroup">
-              <div class="col-4">
-                <button type="button" class="preset-btn active text-center py-2 px-1" data-csv-format="raster" title="Format Raster JPG / PNG">
-                  <div class="fw-bold text-navy small"><i class="bi bi-file-earmark-image me-1 text-primary"></i>JPG / PNG</div>
-                  <div class="text-muted text-truncate" style="font-size:0.68rem;">..._stock.jpg</div>
+              <div class="col-12 col-sm-4">
+                <button type="button" class="preset-btn active text-center py-2 px-2" data-csv-format="raster" title="Format Raster JPG / PNG">
+                  <div class="fw-bold text-navy small"><i class="bi bi-file-earmark-image me-1 text-primary" aria-hidden="true"></i>JPG / PNG</div>
+                  <div class="text-muted text-truncate" style="font-size:0.72rem;">..._stock.jpg</div>
                 </button>
               </div>
-              <div class="col-4">
-                <button type="button" class="preset-btn text-center py-2 px-1" data-csv-format="svg" title="Format Vector SVG">
-                  <div class="fw-bold text-navy small"><i class="bi bi-filetype-svg me-1 text-primary"></i>SVG</div>
-                  <div class="text-muted text-truncate" style="font-size:0.68rem;">..._vector.svg</div>
+              <div class="col-12 col-sm-4">
+                <button type="button" class="preset-btn text-center py-2 px-2" data-csv-format="svg" title="Format Vector SVG">
+                  <div class="fw-bold text-navy small"><i class="bi bi-filetype-svg me-1 text-primary" aria-hidden="true"></i>SVG</div>
+                  <div class="text-muted text-truncate" style="font-size:0.72rem;">..._vector.svg</div>
                 </button>
               </div>
-              <div class="col-4">
-                <button type="button" class="preset-btn text-center py-2 px-1" data-csv-format="eps" title="Format Vector EPS">
-                  <div class="fw-bold text-navy small"><i class="bi bi-file-earmark-code me-1 text-primary"></i>EPS</div>
-                  <div class="text-muted text-truncate" style="font-size:0.68rem;">..._vector.eps</div>
+              <div class="col-12 col-sm-4">
+                <button type="button" class="preset-btn text-center py-2 px-2" data-csv-format="eps" title="Format Vector EPS">
+                  <div class="fw-bold text-navy small"><i class="bi bi-file-earmark-code me-1 text-primary" aria-hidden="true"></i>EPS</div>
+                  <div class="text-muted text-truncate" style="font-size:0.72rem;">..._vector.eps</div>
                 </button>
               </div>
             </div>
@@ -790,7 +842,7 @@
             </div>
           </div>
         </div>
-        <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between">
+        <div class="modal-footer bg-light border-top py-2 px-3 px-sm-4 d-flex flex-wrap gap-2 justify-content-between">
           <button type="button" id="btnExportCsvOnly" class="btn btn-sm btn-outline-secondary">
             Download CSV
           </button>
@@ -806,11 +858,11 @@
   <div class="modal fade text-start text-wrap" id="guideModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content border-0 shadow rounded-3">
-        <div class="modal-header bg-white border-bottom py-3 px-4">
+        <div class="modal-header bg-white border-bottom py-3 px-3 px-sm-4">
           <h5 class="modal-title h6 fw-bold text-navy mb-0">Panduan Singkat</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup Modal"></button>
         </div>
-        <div class="modal-body p-4 small">
+        <div class="modal-body p-3 p-sm-4 small">
           <div class="mb-3">
             <h6 class="fw-bold text-navy mb-1">1. JPG vs Vector (.SVG / .EPS)</h6>
             <p class="text-muted mb-0">
@@ -824,7 +876,7 @@
             </p>
           </div>
         </div>
-        <div class="modal-footer bg-light border-top py-2 px-4">
+        <div class="modal-footer bg-light border-top py-2 px-3 px-sm-4">
           <button type="button" class="btn btn-sm btn-brand px-4" data-bs-dismiss="modal">Tutup</button>
         </div>
       </div>
@@ -837,6 +889,6 @@
   <!-- External Libraries -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script type="module" src="./js/app.js?v=20261113_01"></script>
+  <script type="module" src="./js/app.js?v=20261115_02"></script>
 </body>
 </html>

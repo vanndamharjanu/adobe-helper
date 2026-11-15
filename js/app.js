@@ -1,4 +1,4 @@
-import { upscaleImage, isolateSubjectBackground, splitImageIntoQuadrants, splitImageGrid } from './upscaler.js';
+import { upscaleImage, isolateSubjectBackground, eraseBackgroundAtPoint, splitImageIntoQuadrants, splitImageGrid } from './upscaler.js';
 import { convertImageToVector } from './vectorizer.js';
 import {
   analyzeImageWithGemini,
@@ -151,6 +151,10 @@ const state = {
   exportCsvFormat: 'raster', // 'raster' | 'svg' | 'eps'
   compareViewMode: 'raster', // 'raster' | 'vector'
   compareZoom: 1,
+  comparePanX: 0,
+  comparePanY: 0,
+  isPanMode: false,
+  isMagicWandActive: false,
   settings: {
     targetScale: '8mp',
     profile: 'ai-photorealistic',
@@ -160,8 +164,9 @@ const state = {
     vectorColors: 18,
     minSpeckleArea: 12,
     autoIsolateBg: false,
-    bgTolerance: 24,
+    bgTolerance: 16,
     bgMode: 'transparent',
+    removeInternalHoles: false,
     keywordCount: 42,
     assetStyle: 'ai-auto',
     focusTheme: '',
@@ -407,7 +412,7 @@ function refreshStatsAndGrid() {
     const w = item.upscaledWidth || item.originalWidth;
     const h = item.upscaledHeight || item.originalHeight;
     const isMpOk = mp >= 4.0;
-    const thumbSrc = item.upscaledUrl || item.previewUrl;
+    const thumbSrc = item.upscaledUrl || item.isolatedUrl || item.previewUrl;
     const hasMeta = item.metadata && item.metadata.title;
     const kwCount = item.metadata?.keywords?.length || 0;
 
@@ -444,12 +449,12 @@ function refreshStatsAndGrid() {
                   ${item.name}
                 </div>
                 <span class="font-monospace text-muted flex-shrink-0" style="font-size:0.74rem;">
-                  ${formatBytes(item.upscaledSize || item.originalSize)}
+                  ${formatBytes(item.upscaledSize || item.isolatedBlob?.size || item.originalSize)}
                 </span>
               </div>
 
               <div class="font-monospace text-muted mb-2" style="font-size:0.74rem;">
-                ${w} × ${h} px${item.upscaledUrl ? ' • <span class="text-primary fw-semibold">Upscaled</span>' : ''}
+                ${w} × ${h} px${item.upscaledUrl ? ' • <span class="text-primary fw-semibold">Upscaled</span>' : (item.isIsolated ? ' • <span class="text-primary fw-semibold">PNG Cutout</span>' : '')}
               </div>
 
               <div class="p-2 rounded-2 border bg-light">
@@ -504,10 +509,10 @@ function refreshStatsAndGrid() {
                   </button>
                   <ul class="dropdown-menu dropdown-menu-start shadow-sm border py-1" style="font-size:0.8125rem; min-width:215px; z-index:1050;">
                     <li><h6 class="dropdown-header py-1 text-uppercase fw-bold text-muted" style="font-size:0.68rem; letter-spacing:0.5px;">Pecah Grid Otomatis</h6></li>
-                    <li><button type="button" class="dropdown-item py-1.5 d-flex align-items-center justify-content-between" data-action="split" data-grid="2x2" data-id="${item.id}"><span><i class="bi bi-grid me-2 text-primary"></i><strong>2×2</strong> (4 Gambar)</span> <span class="badge bg-light text-muted border font-monospace">4 pcs</span></button></li>
-                    <li><button type="button" class="dropdown-item py-1.5 d-flex align-items-center justify-content-between" data-action="split" data-grid="3x3" data-id="${item.id}"><span><i class="bi bi-grid-3x3-gap me-2 text-primary"></i><strong>3×3</strong> (9 Gambar)</span> <span class="badge bg-light text-muted border font-monospace">9 pcs</span></button></li>
-                    <li><button type="button" class="dropdown-item py-1.5 d-flex align-items-center justify-content-between" data-action="split" data-grid="2x3" data-id="${item.id}"><span><i class="bi bi-columns me-2 text-primary"></i><strong>2×3</strong> (6 Gambar: 2 Kolom)</span> <span class="badge bg-light text-muted border font-monospace">6 pcs</span></button></li>
-                    <li><button type="button" class="dropdown-item py-1.5 d-flex align-items-center justify-content-between" data-action="split" data-grid="3x2" data-id="${item.id}"><span><i class="bi bi-layout-three-columns me-2 text-primary"></i><strong>3×2</strong> (6 Gambar: 3 Kolom)</span> <span class="badge bg-light text-muted border font-monospace">6 pcs</span></button></li>
+                    <li><button type="button" class="dropdown-item py-2 d-flex align-items-center justify-content-between" data-action="split" data-grid="2x2" data-id="${item.id}"><span><i class="bi bi-grid me-2 text-primary" aria-hidden="true"></i><strong>2×2</strong> (4 Gambar)</span> <span class="badge bg-light text-muted border font-monospace">4 pcs</span></button></li>
+                    <li><button type="button" class="dropdown-item py-2 d-flex align-items-center justify-content-between" data-action="split" data-grid="3x3" data-id="${item.id}"><span><i class="bi bi-grid-3x3-gap me-2 text-primary" aria-hidden="true"></i><strong>3×3</strong> (9 Gambar)</span> <span class="badge bg-light text-muted border font-monospace">9 pcs</span></button></li>
+                    <li><button type="button" class="dropdown-item py-2 d-flex align-items-center justify-content-between" data-action="split" data-grid="2x3" data-id="${item.id}"><span><i class="bi bi-columns me-2 text-primary" aria-hidden="true"></i><strong>2×3</strong> (6 Gambar: 2 Kolom)</span> <span class="badge bg-light text-muted border font-monospace">6 pcs</span></button></li>
+                    <li><button type="button" class="dropdown-item py-2 d-flex align-items-center justify-content-between" data-action="split" data-grid="3x2" data-id="${item.id}"><span><i class="bi bi-layout-three-columns me-2 text-primary" aria-hidden="true"></i><strong>3×2</strong> (6 Gambar: 3 Kolom)</span> <span class="badge bg-light text-muted border font-monospace">6 pcs</span></button></li>
                   </ul>
                 </div>
               </div>
@@ -586,27 +591,38 @@ async function runSingleUpscale(item) {
   refreshStatsAndGrid();
 
   try {
-    let sourceUrl = item.previewUrl;
-    if (state.settings.autoIsolateBg) {
-      const iso = await isolateSubjectBackground(sourceUrl, {
-        tolerance: state.settings.bgTolerance,
-        fillWhite: state.settings.bgMode === 'white'
-      });
-      item.isIsolated = true;
-      item.isolatedBlob = iso.blob;
-      item.isolatedUrl = iso.url;
-      sourceUrl = iso.url;
-    }
+    const keepIsolatedPng = item.isIsolated && item.isolatedUrl && (item.exportExt === '.png' || state.settings.bgMode === 'transparent');
+    const sourceUrl = (item.isIsolated && item.isolatedUrl) ? item.isolatedUrl : item.previewUrl;
+    const shouldPostIsolate = !item.isIsolated && state.settings.autoIsolateBg;
 
     const res = await upscaleImage(sourceUrl, item.originalWidth, item.originalHeight, {
       targetScale: state.settings.targetScale,
       profile: state.settings.profile,
       sharpness: state.settings.sharpness,
-      outputFormat: item.isIsolated && state.settings.bgMode === 'transparent' ? 'image/png' : state.settings.outputFormat,
+      outputFormat: (keepIsolatedPng || (shouldPostIsolate && state.settings.bgMode === 'transparent'))
+        ? 'image/png'
+        : state.settings.outputFormat,
       jpegQuality: state.settings.jpegQuality
     });
 
     let finalBlob = res.blob;
+    let finalUrl = res.url;
+
+    // Run isolation AFTER upscaling when autoIsolateBg is used so edges are cut sharply at full resolution
+    if (shouldPostIsolate) {
+      const iso = await isolateSubjectBackground(res.url, {
+        tolerance: state.settings.bgTolerance,
+        fillWhite: state.settings.bgMode === 'white',
+        removeInternalHoles: state.settings.removeInternalHoles
+      });
+      URL.revokeObjectURL(res.url);
+      item.isIsolated = true;
+      item.isolatedBlob = iso.blob;
+      item.isolatedUrl = iso.url;
+      finalBlob = iso.blob;
+      finalUrl = iso.url;
+    }
+
     if (item.metadata && item.metadata.title) {
       finalBlob = await embedMetadataIntoBlob(finalBlob, item.metadata);
     }
@@ -615,7 +631,7 @@ async function runSingleUpscale(item) {
     item.upscaledHeight = res.height;
     item.upscaledMegapixels = res.megapixels;
     item.upscaledBlob = finalBlob;
-    item.upscaledUrl = res.url;
+    item.upscaledUrl = finalUrl;
     item.upscaledSize = finalBlob.size;
     item.exportExt = finalBlob.type === 'image/png' ? '.png' : '.jpg';
     item.status = 'done';
@@ -690,6 +706,7 @@ async function runSingleVectorize(item) {
       colors: state.settings.vectorColors,
       minSpeckleArea: state.settings.minSpeckleArea,
       removeBackground: !!state.settings.autoIsolateBg && !item.isIsolated,
+      removeInternalHoles: Boolean(state.settings.removeInternalHoles),
       metadata: item.metadata || {},
       onProgress: (phase) => {
         item.stepText = phase;
@@ -905,15 +922,85 @@ async function runBatchQueue(itemsToProcess, workerFn, labelText) {
 /**
  * Inspect & Metadata Modal Rendering & Navigation
  */
+function getComparePanBounds() {
+  const stage = document.getElementById('compareStage');
+  const afterImg = document.getElementById('compareAfterImg');
+  const beforeImg = document.getElementById('compareBeforeImg');
+  const z = state.compareZoom || 1;
+  if (!stage || z <= 1) return { maxX: 0, maxY: 0 };
+
+  const stageW = stage.clientWidth || 0;
+  const stageH = stage.clientHeight || 0;
+  const measuredW = Math.max(afterImg?.offsetWidth || 0, beforeImg?.offsetWidth || 0);
+  const measuredH = Math.max(afterImg?.offsetHeight || 0, beforeImg?.offsetHeight || 0);
+  const imgW = measuredW > 0 ? measuredW : stageW;
+  const imgH = measuredH > 0 ? measuredH : stageH;
+
+  return {
+    maxX: Math.max(0, (imgW * z - stageW) / 2),
+    maxY: Math.max(0, (imgH * z - stageH) / 2)
+  };
+}
+
+function applyCompareTransform() {
+  const z = state.compareZoom || 1;
+  if (z <= 1) {
+    state.comparePanX = 0;
+    state.comparePanY = 0;
+  } else {
+    const { maxX, maxY } = getComparePanBounds();
+    state.comparePanX = Math.max(-maxX, Math.min(maxX, state.comparePanX));
+    state.comparePanY = Math.max(-maxY, Math.min(maxY, state.comparePanY));
+  }
+  const value = `translate(${state.comparePanX}px, ${state.comparePanY}px) scale(${z})`;
+  const beforeImg = document.getElementById('compareBeforeImg');
+  const afterImg = document.getElementById('compareAfterImg');
+  if (beforeImg) beforeImg.style.transform = value;
+  if (afterImg) afterImg.style.transform = value;
+}
+
+function updatePanButtonState() {
+  const btn = document.getElementById('btnComparePan');
+  const stage = document.getElementById('compareStage');
+  const canPan = state.compareZoom > 1;
+  if (!canPan && state.isPanMode) {
+    state.isPanMode = false;
+  }
+  if (stage) {
+    stage.classList.toggle('pan-mode-active', state.isPanMode && canPan);
+    if (!state.isPanMode) stage.classList.remove('is-panning');
+  }
+  if (btn) {
+    btn.disabled = !canPan;
+    const isActive = Boolean(state.isPanMode && canPan);
+    btn.classList.toggle('btn-primary', isActive);
+    btn.classList.toggle('btn-outline-secondary', !isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    btn.title = canPan
+      ? (isActive ? 'Mode tangan aktif: seret gambar ke atas/bawah/kiri/kanan. Klik lagi untuk balik ke slider perbandingan.' : 'Aktifkan mode tangan untuk menggeser gambar')
+      : 'Pilih zoom 2x atau 3.5x untuk menggeser gambar';
+  }
+}
+
+function setPanMode(active) {
+  const next = Boolean(active) && state.compareZoom > 1;
+  state.isPanMode = next;
+  if (next && state.isMagicWandActive) {
+    setMagicWandMode(false);
+  }
+  updatePanButtonState();
+}
+
 function resetZoom() {
   state.compareZoom = 1;
+  state.comparePanX = 0;
+  state.comparePanY = 0;
+  state.isPanMode = false;
   document.querySelectorAll('#zoomBtnGroup button').forEach(b => {
     b.classList.toggle('active', b.dataset.zoom === '1');
   });
-  const beforeImg = document.getElementById('compareBeforeImg');
-  const afterImg = document.getElementById('compareAfterImg');
-  if (beforeImg) beforeImg.style.transform = 'scale(1)';
-  if (afterImg) afterImg.style.transform = 'scale(1)';
+  applyCompareTransform();
+  updatePanButtonState();
   const compareClip = document.getElementById('compareClip');
   if (compareClip) compareClip.style.width = '50%';
   const compareStage = document.getElementById('compareStage');
@@ -970,6 +1057,7 @@ function navigateInspectModal(direction) {
   if (nextItem) {
     state.activeItemId = nextItem.id;
     state.compareViewMode = nextItem.isVectorized && !nextItem.upscaledUrl ? 'vector' : 'raster';
+    setMagicWandMode(false);
     resetZoom();
     renderInspectModal(nextItem);
   }
@@ -980,9 +1068,70 @@ function openInspectModal(itemId) {
   if (!item) return;
   state.activeItemId = item.id;
   state.compareViewMode = item.isVectorized && !item.upscaledUrl ? 'vector' : 'raster';
+  setMagicWandMode(false);
   resetZoom();
   renderInspectModal(item);
   inspectModalInstance?.show();
+}
+
+function setMagicWandMode(active) {
+  state.isMagicWandActive = Boolean(active);
+  if (state.isMagicWandActive && state.isPanMode) {
+    state.isPanMode = false;
+    updatePanButtonState();
+  }
+  const stage = document.getElementById('compareStage');
+  const btn = document.getElementById('btnModalMagicWand');
+  if (stage) stage.classList.toggle('magic-wand-active', state.isMagicWandActive);
+  if (btn) {
+    btn.classList.toggle('btn-primary', state.isMagicWandActive);
+    btn.classList.toggle('btn-outline-primary', !state.isMagicWandActive);
+    btn.innerHTML = state.isMagicWandActive
+      ? '<i class="bi bi-magic me-1" aria-hidden="true"></i>Klik Area Putih... (Aktif)'
+      : '<i class="bi bi-magic me-1" aria-hidden="true"></i>Klik Hapus Area';
+  }
+  const clip = document.getElementById('compareClip');
+  if (clip) clip.style.width = state.isMagicWandActive ? '0%' : '50%';
+}
+
+function pushBgHistory(item) {
+  if (!item) return;
+  if (!Array.isArray(item._bgHistory)) item._bgHistory = [];
+  item._bgHistory.push({
+    isIsolated: Boolean(item.isIsolated),
+    isolatedBlob: item.isolatedBlob || null,
+    isolatedUrl: item.isolatedUrl || null,
+    upscaledBlob: item.upscaledBlob || null,
+    upscaledUrl: item.upscaledUrl || null,
+    upscaledSize: item.upscaledSize || null,
+    upscaledWidth: item.upscaledWidth || null,
+    upscaledHeight: item.upscaledHeight || null,
+    upscaledMegapixels: item.upscaledMegapixels || null,
+    exportExt: item.exportExt || null
+  });
+  if (item._bgHistory.length > 10) item._bgHistory.shift();
+}
+
+async function applyIsolationResultToItem(item, iso) {
+  pushBgHistory(item);
+  let outBlob = iso.blob;
+  const hadUpscale = Boolean(item.upscaledBlob);
+  if (hadUpscale && item.metadata && item.metadata.title) {
+    outBlob = await embedMetadataIntoBlob(outBlob, item.metadata);
+  }
+  item.isIsolated = true;
+  item.isolatedBlob = outBlob;
+  item.isolatedUrl = iso.url;
+  item.exportExt = iso.isTransparent ? '.png' : '.jpg';
+  if (hadUpscale) {
+    item.upscaledBlob = outBlob;
+    item.upscaledUrl = iso.url;
+    item.upscaledSize = outBlob.size;
+  }
+  item.audit = auditAdobeCompliance(item);
+  await saveItemToDb(item);
+  renderInspectModal(item);
+  refreshStatsAndGrid();
 }
 
 function renderInspectModal(item) {
@@ -1012,10 +1161,16 @@ function renderInspectModal(item) {
     document.getElementById('labelAfterDim').textContent = `Vector SVG (${item.vectorPathCount} paths)`;
   } else {
     afterImg.src = item.upscaledUrl || item.isolatedUrl || item.previewUrl;
-    document.getElementById('labelAfterDim').textContent = item.upscaledUrl
-      ? `Upscaled ${w}×${h} (${mp.toFixed(2)} MP)`
-      : 'Original';
+    if (item.upscaledUrl) {
+      document.getElementById('labelAfterDim').textContent = `Upscaled ${w}×${h} (${mp.toFixed(2)} MP)`;
+    } else if (item.isolatedUrl) {
+      document.getElementById('labelAfterDim').textContent = `Cutout ${item.exportExt === '.png' ? 'PNG' : 'JPG'} ${w}×${h}`;
+    } else {
+      document.getElementById('labelAfterDim').textContent = 'Original';
+    }
   }
+  const undoBtn = document.getElementById('btnModalUndoBg');
+  if (undoBtn) undoBtn.disabled = !(item._bgHistory && item._bgHistory.length > 0);
   document.getElementById('labelBeforeDim').textContent = `Original ${item.originalWidth}×${item.originalHeight}`;
 
   document.getElementById('btnViewRasterMode').classList.toggle('active', state.compareViewMode === 'raster');
@@ -1597,19 +1752,61 @@ document.addEventListener('DOMContentLoaded', () => {
     state.settings.minSpeckleArea = val;
   });
 
+  const syncBgControlsUI = () => {
+    const tol = state.settings.bgTolerance;
+    const mode = state.settings.bgMode;
+    const holes = state.settings.removeInternalHoles;
+    const sideTol = document.getElementById('rangeBgTolerance');
+    const sideLabel = document.getElementById('labelBgTolerance');
+    const sideMode = document.getElementById('selectBgMode');
+    const sideHoles = document.getElementById('checkRemoveInternalHoles');
+    const modalTol = document.getElementById('rangeModalBgTolerance');
+    const modalLabel = document.getElementById('labelModalBgTolerance');
+    const modalMode = document.getElementById('selectModalBgMode');
+    const modalHoles = document.getElementById('checkModalInternalHoles');
+    if (sideTol) sideTol.value = tol;
+    if (sideLabel) sideLabel.textContent = `${tol}%`;
+    if (sideMode) sideMode.value = mode;
+    if (sideHoles) sideHoles.checked = holes;
+    if (modalTol) modalTol.value = tol;
+    if (modalLabel) modalLabel.textContent = `${tol}%`;
+    if (modalMode) modalMode.value = mode;
+    if (modalHoles) modalHoles.checked = holes;
+  };
+
   document.getElementById('checkAutoIsolateBg').addEventListener('change', e => {
     state.settings.autoIsolateBg = e.target.checked;
     document.getElementById('bgToleranceBox').classList.toggle('d-none', !e.target.checked);
   });
 
-  document.getElementById('rangeBgTolerance').addEventListener('input', e => {
-    const val = parseInt(e.target.value, 10);
-    document.getElementById('labelBgTolerance').textContent = `${val}%`;
-    state.settings.bgTolerance = val;
+  ['rangeBgTolerance', 'rangeModalBgTolerance'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', e => {
+        state.settings.bgTolerance = parseInt(e.target.value, 10);
+        syncBgControlsUI();
+      });
+    }
   });
 
-  document.getElementById('selectBgMode').addEventListener('change', e => {
-    state.settings.bgMode = e.target.value;
+  ['selectBgMode', 'selectModalBgMode'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('change', e => {
+        state.settings.bgMode = e.target.value;
+        syncBgControlsUI();
+      });
+    }
+  });
+
+  ['checkRemoveInternalHoles', 'checkModalInternalHoles'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('change', e => {
+        state.settings.removeInternalHoles = e.target.checked;
+        syncBgControlsUI();
+      });
+    }
   });
 
   document.getElementById('rangeKeywordCount').addEventListener('input', e => {
@@ -1711,11 +1908,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Inspect Modal Interactive Split Slider
+  // Inspect Modal Interactive Split Slider & Zoom Panning
   const compareStage = document.getElementById('compareStage');
   const compareClip = document.getElementById('compareClip');
   const compareBeforeInner = document.getElementById('compareBeforeInner');
   let isSliding = false;
+  let isPanning = false;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panOriginX = 0;
+  let panOriginY = 0;
+  let isErasingPoint = false;
 
   const updateSliderPos = clientX => {
     const rect = compareStage.getBoundingClientRect();
@@ -1726,24 +1929,123 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   compareStage.addEventListener('mousedown', e => {
+    if (e.target.closest('.stage-nav-arrow')) return;
+    if (state.isMagicWandActive) return;
+    if (state.isPanMode && state.compareZoom > 1) {
+      isPanning = true;
+      panStartX = e.clientX;
+      panStartY = e.clientY;
+      panOriginX = state.comparePanX;
+      panOriginY = state.comparePanY;
+      compareStage.classList.add('is-panning');
+      return;
+    }
     isSliding = true;
     updateSliderPos(e.clientX);
   });
   window.addEventListener('mousemove', e => {
+    if (isPanning) {
+      state.comparePanX = panOriginX + (e.clientX - panStartX);
+      state.comparePanY = panOriginY + (e.clientY - panStartY);
+      applyCompareTransform();
+      return;
+    }
     if (isSliding) updateSliderPos(e.clientX);
   });
   window.addEventListener('mouseup', () => {
+    if (isPanning) {
+      isPanning = false;
+      compareStage.classList.remove('is-panning');
+    }
     isSliding = false;
   });
   compareStage.addEventListener('touchstart', e => {
+    if (e.target.closest('.stage-nav-arrow')) return;
+    if (state.isMagicWandActive || !e.touches[0]) return;
+    if (state.isPanMode && state.compareZoom > 1) {
+      e.preventDefault();
+      isPanning = true;
+      panStartX = e.touches[0].clientX;
+      panStartY = e.touches[0].clientY;
+      panOriginX = state.comparePanX;
+      panOriginY = state.comparePanY;
+      compareStage.classList.add('is-panning');
+      return;
+    }
     isSliding = true;
     updateSliderPos(e.touches[0].clientX);
-  }, { passive: true });
+  }, { passive: false });
   window.addEventListener('touchmove', e => {
+    if (isPanning && e.touches[0]) {
+      e.preventDefault();
+      state.comparePanX = panOriginX + (e.touches[0].clientX - panStartX);
+      state.comparePanY = panOriginY + (e.touches[0].clientY - panStartY);
+      applyCompareTransform();
+      return;
+    }
     if (isSliding && e.touches[0]) updateSliderPos(e.touches[0].clientX);
-  }, { passive: true });
-  window.addEventListener('touchend', () => {
+  }, { passive: false });
+  const endTouchAction = () => {
+    if (isPanning) {
+      isPanning = false;
+      compareStage.classList.remove('is-panning');
+    }
     isSliding = false;
+  };
+  window.addEventListener('touchend', endTouchAction);
+  window.addEventListener('touchcancel', endTouchAction);
+
+  compareStage.addEventListener('click', async e => {
+    if (!state.isMagicWandActive || isErasingPoint) return;
+    if (e.target.closest('.stage-nav-arrow')) return;
+
+    const item = state.items.find(i => i.id === state.activeItemId);
+    const afterImg = document.getElementById('compareAfterImg');
+    if (!item || !afterImg || !afterImg.naturalWidth) return;
+
+    const rect = afterImg.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const natW = afterImg.naturalWidth;
+    const natH = afterImg.naturalHeight;
+    const boxRatio = rect.width / rect.height;
+    const imgRatio = natW / natH;
+    let drawW = rect.width;
+    let drawH = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (imgRatio > boxRatio) {
+      drawH = rect.width / imgRatio;
+      offsetY = (rect.height - drawH) / 2;
+    } else {
+      drawW = rect.height * imgRatio;
+      offsetX = (rect.width - drawW) / 2;
+    }
+
+    const relX = (e.clientX - rect.left - offsetX) / drawW;
+    const relY = (e.clientY - rect.top - offsetY) / drawH;
+    if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return;
+
+    const px = Math.min(natW - 1, Math.max(0, Math.floor(relX * natW)));
+    const py = Math.min(natH - 1, Math.max(0, Math.floor(relY * natH)));
+
+    isErasingPoint = true;
+    try {
+      const srcUrl = item.upscaledUrl || item.isolatedUrl || item.previewUrl;
+      const iso = await eraseBackgroundAtPoint(srcUrl, px, py, {
+        tolerance: state.settings.bgTolerance,
+        fillWhite: state.settings.bgMode === 'white'
+      });
+      if (!iso.changed) {
+        showToast('Sudah Transparan', 'Area yang diklik sudah kosong/transparan.', 'info');
+      } else {
+        await applyIsolationResultToItem(item, iso);
+      }
+    } catch (err) {
+      showToast('Gagal Hapus Area', err.message, 'danger');
+    } finally {
+      isErasingPoint = false;
+    }
   });
 
   // Inspect Modal Navigation Buttons (Header & Stage Overlay)
@@ -1808,9 +2110,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (cStage && cBefore) {
         cBefore.style.width = `${cStage.offsetWidth}px`;
       }
+      applyCompareTransform();
     });
     inspectModalEl.addEventListener('hidden.bs.modal', () => {
       syncActiveModalMetadata();
+      setMagicWandMode(false);
       resetZoom();
     });
   }
@@ -1821,6 +2125,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (cStage && cBefore && cStage.offsetWidth > 0) {
       cBefore.style.width = `${cStage.offsetWidth}px`;
     }
+    applyCompareTransform();
   });
 
   // Inspect Modal View Mode & Zoom
@@ -1841,14 +2146,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  document.getElementById('btnComparePan').addEventListener('click', () => {
+    if (state.compareZoom <= 1) return;
+    setPanMode(!state.isPanMode);
+  });
+
+  document.getElementById('compareAfterImg').addEventListener('load', () => {
+    if (state.compareZoom > 1) applyCompareTransform();
+  });
+
   document.getElementById('zoomBtnGroup').addEventListener('click', e => {
     const btn = e.target.closest('[data-zoom]');
     if (!btn) return;
     document.querySelectorAll('#zoomBtnGroup button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    const prevZoom = state.compareZoom;
     const z = parseFloat(btn.dataset.zoom);
-    document.getElementById('compareBeforeImg').style.transform = `scale(${z})`;
-    document.getElementById('compareAfterImg').style.transform = `scale(${z})`;
+    state.compareZoom = z;
+    if (z <= 1) {
+      state.comparePanX = 0;
+      state.comparePanY = 0;
+      setPanMode(false);
+    } else if (prevZoom <= 1 && !state.isMagicWandActive) {
+      setPanMode(true);
+    }
+    applyCompareTransform();
+    updatePanButtonState();
   });
 
   // Inspect Modal Action Buttons
@@ -1866,24 +2189,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const item = state.items.find(i => i.id === state.activeItemId);
     if (!item) return;
     try {
-      const iso = await isolateSubjectBackground(item.upscaledUrl || item.previewUrl, {
+      const srcUrl = item.upscaledUrl || item.isolatedUrl || item.previewUrl;
+      const iso = await isolateSubjectBackground(srcUrl, {
         tolerance: state.settings.bgTolerance,
-        fillWhite: state.settings.bgMode === 'white'
+        fillWhite: state.settings.bgMode === 'white',
+        removeInternalHoles: state.settings.removeInternalHoles
       });
-      item.isIsolated = true;
-      item.isolatedBlob = iso.blob;
-      item.isolatedUrl = iso.url;
-      item.upscaledBlob = iso.blob;
-      item.upscaledUrl = iso.url;
-      item.upscaledSize = iso.blob.size;
-      item.exportExt = iso.isTransparent ? '.png' : '.jpg';
-      await saveItemToDb(item);
-      renderInspectModal(item);
-      refreshStatsAndGrid();
-      showToast('Background Dihapus', 'Subjek utama berhasil diisolasi.', 'success');
+      await applyIsolationResultToItem(item, iso);
+      showToast('Background Dihapus', 'Latar berhasil dibersihkan dengan edge matting.', 'success');
     } catch (err) {
       showToast('Gagal Hapus Background', err.message, 'danger');
     }
+  });
+
+  document.getElementById('btnModalMagicWand').addEventListener('click', () => {
+    const item = state.items.find(i => i.id === state.activeItemId);
+    if (!item) return;
+    const nextActive = !state.isMagicWandActive;
+    if (nextActive && state.compareViewMode === 'vector') {
+      state.compareViewMode = 'raster';
+      renderInspectModal(item);
+    }
+    setMagicWandMode(nextActive);
+  });
+
+  document.getElementById('btnModalUndoBg').addEventListener('click', async () => {
+    const item = state.items.find(i => i.id === state.activeItemId);
+    if (!item || !item._bgHistory || item._bgHistory.length === 0) return;
+    const prev = item._bgHistory.pop();
+    Object.assign(item, prev);
+    item.audit = auditAdobeCompliance(item);
+    await saveItemToDb(item);
+    renderInspectModal(item);
+    refreshStatsAndGrid();
   });
 
   document.getElementById('btnModalVectorize').addEventListener('click', () => {

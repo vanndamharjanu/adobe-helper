@@ -6266,7 +6266,7 @@ function colorLogoCandidate(d,w,h,s,ow,oh){
 }
 
 // Remove only a nearly uniform background connected to image edges.
-function removeOuterBackground(data,w,h){
+function removeOuterBackground(data,w,h,removeHoles){
  const bins=new Map(),edges=[];
  for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(!x||!y||x===w-1||y===h-1)edges.push(y*w+x);
  let opaque=0;
@@ -6285,9 +6285,9 @@ function removeOuterBackground(data,w,h){
   const D=p=>{const i=p*4;return (orig[i]-bg[0])**2+(orig[i+1]-bg[1])**2+(orig[i+2]-bg[2])**2;},hb=new Map();let fg=0;
   for(let p=0;p<w*h;p++){if(seen[p]||orig[p*4+3]<128||D(p)<60*60)continue;fg++;const i=p*4,k=((orig[i]>>4)<<8)|((orig[i+1]>>4)<<4)|(orig[i+2]>>4);let b=hb.get(k);if(!b){b=[0,0,0,0];hb.set(k,b);}b[0]+=orig[i];b[1]+=orig[i+1];b[2]+=orig[i+2];b[3]++;}
   const top=[...hb.values()].sort((a,b)=>b[3]-a[3])[0];
-  if(top&&fg>0){const c=[top[0]/top[3],top[1]/top[3],top[2]/top[3]];let near=0;
-   for(let p=0;p<w*h;p++){if(seen[p]||orig[p*4+3]<128||D(p)<60*60)continue;const i=p*4;if((orig[i]-c[0])**2+(orig[i+1]-c[1])**2+(orig[i+2]-c[2])**2<=60*60)near++;}
-   if(near/fg>=.7){read=end=0;for(let p=0;p<w*h;p++)if(!seen[p]&&orig[p*4+3]>=128&&D(p)<=36*36){seen[p]=1;queue[end++]=p;}
+  if(removeHoles||(top&&fg>0)){let ok=!!removeHoles;if(!ok&&top&&fg>0){const c=[top[0]/top[3],top[1]/top[3],top[2]/top[3]];let near=0;
+   for(let p=0;p<w*h;p++){if(seen[p]||orig[p*4+3]<128||D(p)<60*60)continue;const i=p*4;if((orig[i]-c[0])**2+(orig[i+1]-c[1])**2+(orig[i+2]-c[2])**2<=60*60)near++;}ok=near/fg>=.7;}
+   if(ok){read=end=0;for(let p=0;p<w*h;p++)if(!seen[p]&&orig[p*4+3]>=128&&D(p)<=36*36){seen[p]=1;queue[end++]=p;}
     while(read<end){const p=queue[read++],i=p*4;if(data[i+3])holes++;data[i]=data[i+1]=data[i+2]=data[i+3]=0;}}}
   matteEdges(data,orig,seen,w,h,bg);}
  return {data,note:removed?(holes?' Latar polos dihapus, termasuk lubang huruf/bentuk.':' Latar polos dari tepi dihapus; area tertutup dipertahankan.'):' Tidak ada latar yang dihapus.'};
@@ -6303,7 +6303,7 @@ function matteEdges(data,orig,seen,w,h,bg){
   if(f<0||best<48){for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++){const X=x+dx,Y=y+dy;if(X<0||Y<0||X>=w||Y>=h)continue;const q=Y*w+X;if(seen[q]||orig[q*4+3]<128)continue;const e=D(q);if(e>best){best=e;f=q;}}}
   if(f<0||best<48){if(!seen[p]&&D(p)<100)out.push([p*4,orig[p*4],orig[p*4+1],orig[p*4+2],0]);continue;}const i=p*4,j=f*4,v=[orig[j]-bg[0],orig[j+1]-bg[1],orig[j+2]-bg[2]],c=[orig[i]-bg[0],orig[i+1]-bg[1],orig[i+2]-bg[2]];
   const a=Math.max(0,Math.min(1,(c[0]*v[0]+c[1]*v[1]+c[2]*v[2])/(v[0]*v[0]+v[1]*v[1]+v[2]*v[2])));
-  out.push([i,orig[j],orig[j+1],orig[j+2],a<.04?0:Math.round(a*orig[i+3])]);}
+  if(Math.hypot(c[0]-a*v[0],c[1]-a*v[1],c[2]-a*v[2])<=42)out.push([i,orig[j],orig[j+1],orig[j+2],a<.04?0:Math.round(a*orig[i+3])]);}
  for(const [i,r,g,b,a] of out){data[i]=r;data[i+1]=g;data[i+2]=b;data[i+3]=a;}
 }
 // ===== VektorKu V2 Pro 1.46: warna kembar disatukan =====
@@ -6484,7 +6484,7 @@ let backgroundRemovalNote='',rawPixels=null,lastNoisy=false;const __postRaw=x=>p
 
 self.onmessage=({data:m})=>{detailKeep=null;stackTrace.ink=!!(m.settings&&m.settings.ink===true);const postMessage=x=>{if(x&&typeof x.svg==='string'&&m.settings&&m.settings.repair!==false&&rawPixels&&rawPixels.length===m.width*m.height*4&&x.engine!=='Pixel art'){try{__postRaw({phase:'Memeriksa dan memperbaiki cacat…',stage:4});const t0=Date.now(),r=selfRepair(x.svg,rawPixels,m.width,m.height,m.settings.repairOpt||{});if(r)x=Object.assign({},x,{svg:r.svg,defects:{areas:r.areas.slice(0,10).map(a=>({x0:a.x0,y0:a.y0,x1:a.x1,y1:a.y1,type:a.type})),total:r.areas.length,fixed:r.fixed,before:r.before??r.areas.length,w:m.width,h:m.height,ms:Date.now()-t0}});}catch(e){}}if(x&&typeof x.svg==='string'&&m.settings&&m.settings.unify!==false){try{x=Object.assign({},x,{svg:m.settings.shrink===false?closePaths(unifyColors(x.svg)):shrinkNumbers(closePaths(unifyColors(x.svg)))});}catch(e){}}__postRaw(x);};try{
  backgroundRemovalNote="";postMessage({phase:"Menganalisis gambar…",stage:1});
- const {width:w,height:h,settings:s}=m;let automaticColor=s.mode==='auto';let d=new Uint8ClampedArray(m.buffer);let transparent=false;if(s.removeBackground){postMessage({phase:"Menghapus latar dari tepi…",stage:1});const bg=removeOuterBackground(d,w,h);d=bg.data;backgroundRemovalNote=bg.note;s.removeWhite=false;}colorTraceSource={data:d.slice(),width:w,height:h,pal:[]};
+ const {width:w,height:h,settings:s}=m;let automaticColor=s.mode==='auto';let d=new Uint8ClampedArray(m.buffer);let transparent=false;if(s.removeBackground){postMessage({phase:"Menghapus latar dari tepi…",stage:1});const bg=removeOuterBackground(d,w,h,!!s.removeInternalHoles);d=bg.data;backgroundRemovalNote=bg.note;s.removeWhite=false;}colorTraceSource={data:d.slice(),width:w,height:h,pal:[]};
  // Persiapan gambar. Otomatis: ilustrasi selalu difilter jaga-tepi (seperti sebelumnya); logo berwarna
  // hanya bila ada artefak kompresi; logo satu warna tidak difilter (tepinya diukur dengan luas cakupan,
  // yang sudah merata-ratakan derau). Pilihan eksplisit berlaku untuk semua jalur.

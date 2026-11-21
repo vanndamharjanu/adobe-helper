@@ -3,7 +3,7 @@
  * Analyzes actual image pixels (NEVER guesses from camera filenames like IMG_1234.jpg)
  */
 
-import { ADOBE_CATEGORIES } from './xmp-exporter.js';
+import { ADOBE_CATEGORIES } from './xmp-exporter.js?v=20261121_01';
 
 export const BANNED_BRANDS = [
   'apple', 'iphone', 'ipad', 'macbook', 'imac', 'airpods', 'ios',

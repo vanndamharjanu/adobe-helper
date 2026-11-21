@@ -1,5 +1,5 @@
-import { upscaleImage, isolateSubjectBackground, eraseBackgroundAtPoint, splitImageIntoQuadrants, splitImageGrid } from './upscaler.js';
-import { convertImageToVector, injectSvgMetadata, updateEpsMetadata } from './vectorizer.js';
+import { upscaleImage, isolateSubjectBackground, eraseBackgroundAtPoint, splitImageIntoQuadrants, splitImageGrid } from './upscaler.js?v=20261121_01';
+import { convertImageToVector, injectSvgMetadata, updateEpsMetadata } from './vectorizer.js?v=20261121_01';
 import {
   analyzeImageWithGemini,
   discoverAvailableVisionModels,
@@ -9,7 +9,7 @@ import {
   getTodayApiUsage,
   generateCustomFlowPrompts,
   researchLiveMicrostockTrends
-} from './gemini-vision.js';
+} from './gemini-vision.js?v=20261121_01';
 import {
   ADOBE_CATEGORIES,
   escapeXml,
@@ -18,11 +18,11 @@ import {
   generateAgencyCsv,
   computeExportReadiness,
   filterExportableItems
-} from './xmp-exporter.js';
+} from './xmp-exporter.js?v=20261121_01';
 import {
   MONTH_NAMES_ID,
   getNichesByHorizon
-} from './niche-prompts.js';
+} from './niche-prompts.js?v=20261121_01';
 
 // IndexedDB Queue Persistence (so page refresh does not lose images/metadata)
 const DB_NAME = 'microstock_adobe_helper_db';

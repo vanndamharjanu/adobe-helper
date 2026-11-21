@@ -8,11 +8,11 @@
  * - OKLab perceptual color unification & 16 MP Adobe Stock Microstock artboard scaling
  */
 
-import { loadImageElement } from './upscaler.js';
-import { escapeXml } from './xmp-exporter.js';
+import { loadImageElement } from './upscaler.js?v=20261121_01';
+import { escapeXml } from './xmp-exporter.js?v=20261121_01';
 
 const STOCK_AREA = 16e6; // 16 MP standard for Adobe Stock Vector (15–65 MP requirement)
-const WORKER_SCRIPT_URL = new URL('./vector-worker.js', import.meta.url);
+const WORKER_SCRIPT_URL = new URL('./vector-worker.js?v=20261121_01', import.meta.url);
 
 /**
  * Evaluates whether an image is suitable for Adobe Stock Vector submission

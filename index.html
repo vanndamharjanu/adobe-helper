@@ -30,6 +30,9 @@
         <button type="button" class="nav-page-btn" data-page="niche">
           Niche &amp; Prompt
         </button>
+        <button type="button" class="nav-page-btn" data-page="trends">
+          <i class="bi bi-graph-up-arrow me-1"></i>Tren Real-Time
+        </button>
       </nav>
 
       <div class="d-flex align-items-center flex-wrap gap-2 order-2 ms-auto order-md-3 ms-md-0">
@@ -183,9 +186,29 @@
                   Gunakan konversi vector (.SVG / .EPS) untuk ilustrasi flat, logo, dan ikon.
                 </p>
 
+                <div class="row g-2 mb-3">
+                  <div class="col-6">
+                    <label class="small fw-semibold text-navy d-block mb-1">Mode Engine</label>
+                    <select id="selectVectorMode" class="form-select form-select-sm">
+                      <option value="auto" selected>Otomatis</option>
+                      <option value="logoColor">Logo Warna Datar</option>
+                      <option value="color">Ilustrasi / Gradien</option>
+                      <option value="bw">Hitam-Putih</option>
+                      <option value="pixel">Pixel Art</option>
+                    </select>
+                  </div>
+                  <div class="col-6">
+                    <label class="small fw-semibold text-navy d-block mb-1">Kualitas Kurva</label>
+                    <select id="selectVectorQuality" class="form-select form-select-sm">
+                      <option value="accurate" selected>Akurat (Detail)</option>
+                      <option value="simple">Halus (Hemat Titik)</option>
+                    </select>
+                  </div>
+                </div>
+
                 <div class="mb-3">
                   <div class="d-flex justify-content-between small mb-1">
-                    <label for="rangeVectorColors" class="fw-semibold text-navy">Jumlah Warna</label>
+                    <label for="rangeVectorColors" class="fw-semibold text-navy">Maks. Jumlah Warna</label>
                     <span id="labelVectorColors" class="font-monospace text-muted">18 Warna</span>
                   </div>
                   <input type="range" id="rangeVectorColors" class="form-range" min="4" max="32" step="2" value="18" />
@@ -197,6 +220,13 @@
                     <span id="labelSpeckleArea" class="font-monospace text-muted">12 px</span>
                   </div>
                   <input type="range" id="rangeSpeckleArea" class="form-range" min="4" max="40" step="2" value="12" />
+                </div>
+
+                <div class="form-check form-switch mb-2 pt-2 border-top">
+                  <input class="form-check-input" type="checkbox" id="checkVectorRemoveWhite" />
+                  <label class="form-check-label small fw-semibold text-navy" for="checkVectorRemoveWhite">
+                    Hapus Latar Putih (#FFFFFF) di Vector
+                  </label>
                 </div>
 
                 <div class="pt-2 border-top">
@@ -424,6 +454,99 @@
 
       <!-- Full-Width Niche Cards Grid -->
       <div id="nicheCardsContainer" class="row g-3"></div>
+    </div>
+
+    <!-- PAGE 3: TREN REAL-TIME (GEMINI + GOOGLE SEARCH GROUNDING) -->
+    <div id="viewTrends" class="d-none">
+      <div class="pro-card p-3 mb-3">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 pb-3 mb-3 border-bottom">
+          <div>
+            <h2 class="h6 fw-bold text-navy mb-0">
+              <i class="bi bi-graph-up-arrow text-primary me-1"></i>Riset Tren Microstock Real-Time
+            </h2>
+            <div class="text-muted" style="font-size: 0.78rem;">
+              Menelusuri topik, event, dan kebutuhan desain yang sedang hype langsung lewat <strong>Gemini + Google Search</strong> (tanpa perlu Adobe Enterprise API).
+            </div>
+          </div>
+          <span id="trendsLastUpdatedBadge" class="badge bg-light text-muted border font-monospace d-none">-</span>
+        </div>
+
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-sm-6 col-lg-3">
+            <label class="small fw-semibold text-navy d-block mb-1">Fokus Kategori</label>
+            <select id="selectTrendCategory" class="form-select form-select-sm bg-white">
+              <option value="Semua Kategori" selected>Semua Kategori</option>
+              <option value="Bisnis, AI & Teknologi">Bisnis, AI &amp; Teknologi</option>
+              <option value="Event & Musiman Global">Event &amp; Musiman Global</option>
+              <option value="Gaya Hidup & Kesehatan">Gaya Hidup &amp; Kesehatan</option>
+              <option value="Lingkungan & Energi Hijau">Lingkungan &amp; Energi Hijau</option>
+              <option value="E-Commerce, Kuliner & Produk">E-Commerce, Kuliner &amp; Produk</option>
+              <option value="Ilustrasi, Ikon & Graphic Resources">Ilustrasi, Ikon &amp; Graphic Resources</option>
+            </select>
+          </div>
+
+          <div class="col-12 col-sm-6 col-lg-2">
+            <label class="small fw-semibold text-navy d-block mb-1">Tipe Aset</label>
+            <select id="selectTrendAssetType" class="form-select form-select-sm bg-white">
+              <option value="Semua (Foto, 3D & Vector)" selected>Semua Format</option>
+              <option value="Foto & Editorial">Foto &amp; Editorial</option>
+              <option value="3D Render & Podium">3D Render &amp; Podium</option>
+              <option value="Flat Vector & Ikon">Flat Vector &amp; Ikon</option>
+              <option value="Video / Motion Concept">Video / Motion</option>
+            </select>
+          </div>
+
+          <div class="col-12 col-sm-6 col-lg-3">
+            <label class="small fw-semibold text-navy d-block mb-1">Rentang Tren</label>
+            <select id="selectTrendHorizon" class="form-select form-select-sm bg-white">
+              <option value="Sedang Hype Minggu & Bulan Ini" selected>Sedang Hype Saat Ini</option>
+              <option value="Persiapan Event 1–3 Bulan Mendatang">Persiapan 1–3 Bulan Depan</option>
+              <option value="Tren Desain & Visual Komersial Terkini">Tren Desain Visual Terkini</option>
+            </select>
+          </div>
+
+          <div class="col-12 col-sm-6 col-lg-4">
+            <label class="small fw-semibold text-navy d-block mb-1">Topik / Kata Kunci Tambahan (Opsional)</label>
+            <div class="input-group input-group-sm">
+              <input type="text" id="inputTrendTopic" class="form-control bg-white" placeholder="Contoh: fintech, Ramadan, skincare..." />
+              <button type="button" id="btnFetchLiveTrends" class="btn btn-brand px-3 fw-semibold">
+                <i class="bi bi-search me-1"></i>Cari Tren Hype
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div id="trendsLoadingBox" class="pro-card p-4 text-center mb-3 d-none">
+        <div class="spinner-border text-primary mb-2" role="status"></div>
+        <div class="fw-semibold text-navy small">Menelusuri Google Search &amp; menganalisis tren microstock...</div>
+        <div class="text-muted" style="font-size: 0.78rem;">Menyusun topik hype, keyword potensial, dan prompt anti-pasaran</div>
+      </div>
+
+      <!-- Summary & Live Sources Box -->
+      <div id="trendsSummaryBox" class="pro-card p-3 mb-3 d-none">
+        <div class="small fw-bold text-navy mb-1">Ringkasan Tren Pasar Saat Ini</div>
+        <p id="trendsMarketSummary" class="small text-muted mb-2"></p>
+        <div id="trendsSourcesRow" class="d-flex flex-wrap align-items-center gap-1 pt-2 border-top d-none">
+          <span class="text-muted me-1" style="font-size: 0.75rem;">Sumber Google Search:</span>
+        </div>
+      </div>
+
+      <!-- Empty State -->
+      <div id="trendsEmptyState" class="pro-card p-4 p-md-5 text-center">
+        <i class="bi bi-stars text-primary fs-3 d-block mb-2"></i>
+        <h3 class="h6 fw-bold text-navy mb-1">Temukan Topik yang Sedang Ramai Dicari Pembeli</h3>
+        <p class="text-muted small mx-auto mb-3" style="max-width: 460px;">
+          Klik <strong>Cari Tren Hype</strong> untuk membiarkan Gemini mencari topik terbaru di Google Search, lengkap dengan alasan tren, keyword siap pakai, dan prompt Google Flow.
+        </p>
+        <button type="button" id="btnEmptyFetchTrends" class="btn btn-sm btn-brand px-3 py-2">
+          <i class="bi bi-search me-1"></i>Cari Tren Hype Sekarang
+        </button>
+      </div>
+
+      <!-- Live Trends Cards Grid -->
+      <div id="trendsCardsContainer" class="row g-3"></div>
     </div>
 
   </main>

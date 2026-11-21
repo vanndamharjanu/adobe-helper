@@ -638,3 +638,168 @@ export function auditAdobeCompliance(item) {
   };
 }
 
+export function extractJsonObject(rawText = '') {
+  const cleaned = String(rawText || '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    }
+    throw new Error('Respons JSON dari Gemini tidak dapat diparsing.');
+  }
+}
+
+/**
+ * Researches live, currently-hyped microstock trends using Gemini + Google Search Grounding
+ */
+export async function researchLiveMicrostockTrends(options = {}) {
+  const apiKeysRaw = options.apiKeys || localStorage.getItem('adobe_helper_gemini_keys') || '';
+  const keys = apiKeysRaw
+    .split(/[\n,;]+/)
+    .map(k => k.trim())
+    .filter(Boolean);
+
+  if (keys.length === 0) {
+    throw new Error('API_KEY_MISSING: Masukkan API Key Google Gemini terlebih dahulu di menu API Key.');
+  }
+
+  const categoryFocus = options.category || 'Semua Kategori';
+  const assetType = options.assetType || 'Semua (Foto, 3D & Vector)';
+  const horizon = options.horizon || 'Sedang Hype Saat Ini';
+  const customTopic = (options.topic || '').trim();
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const promptText = `You are a Senior Adobe Stock & Microstock Market Strategist.
+Today's date is ${todayStr}.
+Use Google Search to research what visual topics, seasonal events, design trends, technology/business themes, and commercial stock buyer demands are CURRENTLY trending or spiking right now (${horizon}).
+
+FILTERS:
+- Focus Category: ${categoryFocus}
+- Target Asset Format: ${assetType}
+- Research Horizon: ${horizon}
+${customTopic ? `- Specific Topic/Keyword Hint: ${customTopic}` : ''}
+
+TASK:
+Based on live Google Search findings, return 6 distinct, high-demand, non-cliché microstock niches/topics that contributors should create right now.
+For each niche, include:
+1. "title": Concise commercial niche title (clear for microstock contributors).
+2. "trendBadge": Short status label (e.g. "Sedang Naik", "Musiman Dekat", "Permintaan Tinggi").
+3. "category": Best matching Adobe Stock category.
+4. "whyHype": 1-2 sentences in Indonesian explaining WHY this is trending right now based on current events/search trends.
+5. "buyerTarget": Who buys this (in Indonesian, e.g. "Agensi fintech, media berita, kampanye iklan").
+6. "keywords": Array of 10 high-value lowercase English microstock keywords.
+7. "prompts": Array of 2 distinct, unconventional, anti-cliché English prompts ready for Google Flow / ImageFX (with generous copy space, zero text/watermarks/logos). Each item: { "style": "...", "prompt": "..." }.
+
+OUTPUT FORMAT:
+Return ONLY a valid JSON object (no markdown commentary outside JSON) with this exact structure:
+{
+  "marketSummary": "1-2 sentences in Indonesian summarizing current microstock trend insights found via search.",
+  "trends": [
+    {
+      "title": "...",
+      "trendBadge": "...",
+      "category": "...",
+      "whyHype": "...",
+      "buyerTarget": "...",
+      "keywords": ["..."],
+      "prompts": [
+        { "style": "...", "prompt": "..." },
+        { "style": "...", "prompt": "..." }
+      ]
+    }
+  ]
+}`;
+
+  const models = [
+    options.preferredModel || 'gemini-3.8-flash',
+    'gemini-3.8-flash',
+    'gemini-3.8-pro',
+    'gemini-2.5-flash'
+  ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+
+  let lastError = null;
+  const startKeyIdx = Math.floor(Math.random() * keys.length);
+
+  for (let kOffset = 0; kOffset < keys.length; kOffset++) {
+    const apiKey = keys[(startKeyIdx + kOffset) % keys.length];
+    let discovered = false;
+
+    for (let mIdx = 0; mIdx < models.length; mIdx++) {
+      const model = models[mIdx];
+      try {
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: promptText }] }],
+            tools: [{ google_search: {} }],
+            generationConfig: {
+              temperature: 0.45
+            }
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          const msg = errData?.error?.message || `HTTP ${response.status}`;
+          const suggestedMatch = msg.match(/models\/([a-zA-Z0-9._-]+)/i);
+          if (suggestedMatch?.[1] && !models.includes(suggestedMatch[1])) {
+            models.splice(mIdx + 1, 0, suggestedMatch[1]);
+          } else if (!discovered && (response.status === 404 || response.status === 400)) {
+            discovered = true;
+            const liveModels = await discoverAvailableVisionModels(apiKey);
+            for (const lm of liveModels) {
+              if (!models.includes(lm)) models.push(lm);
+            }
+          }
+          throw new Error(`[${model}] ${msg}`);
+        }
+
+        const result = await response.json();
+        recordApiUsage(result?.usageMetadata);
+        const candidate = result?.candidates?.[0];
+        const parts = candidate?.content?.parts || [];
+        const rawText = parts.map(p => p.text || '').join('\n').trim();
+        if (!rawText) {
+          throw new Error('Respons Gemini kosong.');
+        }
+
+        const parsed = extractJsonObject(rawText);
+        const gm = candidate?.groundingMetadata || {};
+        const searchQueries = Array.isArray(gm.webSearchQueries) ? gm.webSearchQueries : [];
+        const sources = [];
+        const seenUrls = new Set();
+        for (const chunk of gm.groundingChunks || []) {
+          const uri = chunk?.web?.uri;
+          const title = chunk?.web?.title || uri;
+          if (uri && /^https?:\/\//i.test(uri) && !seenUrls.has(uri)) {
+            seenUrls.add(uri);
+            sources.push({ title, uri });
+          }
+        }
+
+        return {
+          fetchedAt: new Date().toISOString(),
+          modelUsed: model,
+          marketSummary: parsed.marketSummary || '',
+          trends: Array.isArray(parsed.trends) ? parsed.trends : [],
+          searchQueries,
+          sources: sources.slice(0, 8)
+        };
+      } catch (err) {
+        lastError = err;
+        console.warn(`Live trend research notice (${model}):`, err.message);
+      }
+    }
+  }
+
+  throw new Error(`Gagal meriset tren real-time: ${lastError?.message || 'Periksa API Key atau koneksi Anda.'}`);
+}
+

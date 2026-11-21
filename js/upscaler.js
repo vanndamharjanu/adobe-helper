@@ -67,6 +67,7 @@ export function loadImageElement(src) {
 /**
  * Pre-cleans JPEG mosquito noise, compression blocks, and dirty white backgrounds
  * at the original resolution BEFORE upscaling so artifacts are never magnified.
+ * Uses YCbCr-aware bilateral filtering (stronger chroma deblocking, edge-preserving luma).
  */
 function preCleanSourceCanvas(canvas) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -80,21 +81,21 @@ function preCleanSourceCanvas(canvas) {
 
   // Detect if image has a predominantly white background from opaque corners
   const cornerCoords = [
-    [1, 1], [w - 2, 1], [1, h - 2], [w - 2, h - 2]
+    [1, 1], [Math.max(0, w - 2), 1], [1, Math.max(0, h - 2)], [Math.max(0, w - 2), Math.max(0, h - 2)]
   ];
   let whiteCorners = 0;
   for (const [cx, cy] of cornerCoords) {
-    const idx = (Math.max(0, cy) * w + Math.max(0, cx)) * 4;
+    const idx = (Math.max(0, Math.min(h - 1, cy)) * w + Math.max(0, Math.min(w - 1, cx))) * 4;
     if (src[idx + 3] >= 128 && src[idx] > 238 && src[idx + 1] > 238 && src[idx + 2] > 238) {
       whiteCorners++;
     }
   }
   const hasWhiteBg = whiteCorners >= 3;
 
-  // 5x5 Edge-Preserving Bilateral Filter to remove JPEG mosquito noise around lines
-  for (let y = 2; y < h - 2; y++) {
+  // 5x5 YCbCr-aware Edge-Preserving Bilateral Filter across all pixels (clamped borders)
+  for (let y = 0; y < h; y++) {
     const row = y * w;
-    for (let x = 2; x < w - 2; x++) {
+    for (let x = 0; x < w; x++) {
       const idx = (row + x) * 4;
       if (src[idx + 3] < 128) continue;
       const r0 = src[idx];
@@ -112,36 +113,54 @@ function preCleanSourceCanvas(canvas) {
         }
       }
 
-      let rSum = r0 * 2;
-      let gSum = g0 * 2;
-      let bSum = b0 * 2;
-      let wSum = 2;
+      const y0 = 0.299 * r0 + 0.587 * g0 + 0.114 * b0;
+      const cb0 = -0.1687 * r0 - 0.3313 * g0 + 0.5 * b0;
+      const cr0 = 0.5 * r0 - 0.4187 * g0 - 0.0813 * b0;
+
+      let ySum = y0 * 2.5;
+      let yWSum = 2.5;
+      let cbSum = cb0 * 1.5;
+      let crSum = cr0 * 1.5;
+      let cWSum = 1.5;
 
       for (let dy = -2; dy <= 2; dy++) {
-        const ny = (y + dy) * w;
+        const ny = Math.max(0, Math.min(h - 1, y + dy)) * w;
         for (let dx = -2; dx <= 2; dx++) {
           if (dx === 0 && dy === 0) continue;
-          const nIdx = (ny + x + dx) * 4;
+          const nIdx = (ny + Math.max(0, Math.min(w - 1, x + dx))) * 4;
           if (src[nIdx + 3] < 128) continue;
           const nr = src[nIdx];
           const ng = src[nIdx + 1];
           const nb = src[nIdx + 2];
 
+          const nyVal = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+          const lumaDiff = Math.abs(nyVal - y0);
           const colorDiff = Math.abs(nr - r0) + Math.abs(ng - g0) + Math.abs(nb - b0);
-          // Only blend neighbors that belong to the same color region (preserves sharp outlines)
-          if (colorDiff < 32) {
-            const weight = colorDiff < 14 ? 1.0 : 0.45;
-            rSum += nr * weight;
-            gSum += ng * weight;
-            bSum += nb * weight;
-            wSum += weight;
+
+          // Luma preserves crisp edges; chroma smooths 4:2:0 JPEG color blocks slightly wider
+          if (lumaDiff < 14 && colorDiff < 36) {
+            const wL = lumaDiff < 6 ? 1.0 : 0.45;
+            ySum += nyVal * wL;
+            yWSum += wL;
+          }
+          if (lumaDiff < 20 && colorDiff < 48) {
+            const wC = colorDiff < 18 ? 1.0 : 0.5;
+            const ncb = -0.1687 * nr - 0.3313 * ng + 0.5 * nb;
+            const ncr = 0.5 * nr - 0.4187 * ng - 0.0813 * nb;
+            cbSum += ncb * wC;
+            crSum += ncr * wC;
+            cWSum += wC;
           }
         }
       }
 
-      out[idx] = Math.round(rSum / wSum);
-      out[idx + 1] = Math.round(gSum / wSum);
-      out[idx + 2] = Math.round(bSum / wSum);
+      const yf = ySum / yWSum;
+      const cbf = cbSum / cWSum;
+      const crf = crSum / cWSum;
+
+      out[idx] = Math.max(0, Math.min(255, Math.round(yf + 1.402 * crf)));
+      out[idx + 1] = Math.max(0, Math.min(255, Math.round(yf - 0.34414 * cbf - 0.71414 * crf)));
+      out[idx + 2] = Math.max(0, Math.min(255, Math.round(yf + 1.772 * cbf)));
     }
   }
 
@@ -150,13 +169,153 @@ function preCleanSourceCanvas(canvas) {
 }
 
 /**
- * Applies Isotropic (8-Connected Diagonal-Friendly) Edge-Preserving Filter
- * Prevents stair-stepping on diagonal lines and eliminates ringing halos.
+ * Separable Float32 Lanczos-3 Resampler with Anti-Ringing Local Min/Max Clamping.
+ * Eliminates 8-bit multi-pass banding and preserves crisp detail without ringing halos.
+ */
+export async function lanczos3Resample(srcData, srcW, srcH, dstW, dstH) {
+  if (srcW === dstW && srcH === dstH) {
+    return new Uint8ClampedArray(srcData);
+  }
+
+  const sinc = x => {
+    if (x === 0) return 1;
+    const px = Math.PI * x;
+    return Math.sin(px) / px;
+  };
+  const lanczos3 = x => {
+    const ax = Math.abs(x);
+    return ax < 3 ? sinc(x) * sinc(x / 3) : 0;
+  };
+
+  const buildWeights = (inSize, outSize) => {
+    const scale = inSize / outSize;
+    const support = scale > 1 ? 3 * scale : 3; // shrink uses wider filter to avoid aliasing
+    const step = scale > 1 ? 1 / scale : 1;
+    const plan = new Array(outSize);
+    for (let o = 0; o < outSize; o++) {
+      const center = (o + 0.5) * scale - 0.5;
+      const left = Math.max(0, Math.ceil(center - support));
+      const right = Math.min(inSize - 1, Math.floor(center + support));
+      const count = right - left + 1;
+      const weights = new Float32Array(count);
+      let wSum = 0;
+      for (let i = 0; i < count; i++) {
+        const w = lanczos3((left + i - center) * step);
+        weights[i] = w;
+        wSum += w;
+      }
+      if (wSum > 0) {
+        for (let i = 0; i < count; i++) weights[i] /= wSum;
+      }
+      const c0 = Math.max(0, Math.min(inSize - 1, Math.floor(center)));
+      const c1 = Math.max(0, Math.min(inSize - 1, c0 + 1));
+      plan[o] = { left, count, weights, c0, c1 };
+    }
+    return plan;
+  };
+
+  const xPlan = buildWeights(srcW, dstW);
+  const yPlan = buildWeights(srcH, dstH);
+
+  // Horizontal pass into Float32 RGBA (premultiplied alpha to prevent dark fringes)
+  const temp = new Float32Array(dstW * srcH * 4);
+  for (let y = 0; y < srcH; y++) {
+    const srcRow = y * srcW * 4;
+    const dstRow = y * dstW * 4;
+    for (let x = 0; x < dstW; x++) {
+      const { left, count, weights, c0, c1 } = xPlan[x];
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let i = 0; i < count; i++) {
+        const w = weights[i];
+        const idx = srcRow + (left + i) * 4;
+        const alpha = srcData[idx + 3] / 255;
+        r += srcData[idx] * alpha * w;
+        g += srcData[idx + 1] * alpha * w;
+        b += srcData[idx + 2] * alpha * w;
+        a += alpha * w;
+      }
+
+      // Anti-ringing clamp to nearest 2 source pixels along X
+      const i0 = srcRow + c0 * 4;
+      const i1 = srcRow + c1 * 4;
+      const a0 = srcData[i0 + 3] / 255;
+      const a1 = srcData[i1 + 3] / 255;
+      const minR = Math.min(srcData[i0] * a0, srcData[i1] * a1);
+      const maxR = Math.max(srcData[i0] * a0, srcData[i1] * a1);
+      const minG = Math.min(srcData[i0 + 1] * a0, srcData[i1 + 1] * a1);
+      const maxG = Math.max(srcData[i0 + 1] * a0, srcData[i1 + 1] * a1);
+      const minB = Math.min(srcData[i0 + 2] * a0, srcData[i1 + 2] * a1);
+      const maxB = Math.max(srcData[i0 + 2] * a0, srcData[i1 + 2] * a1);
+
+      const dIdx = dstRow + x * 4;
+      temp[dIdx] = Math.max(minR, Math.min(maxR, r));
+      temp[dIdx + 1] = Math.max(minG, Math.min(maxG, g));
+      temp[dIdx + 2] = Math.max(minB, Math.min(maxB, b));
+      temp[dIdx + 3] = Math.max(Math.min(a0, a1), Math.min(Math.max(a0, a1), a));
+    }
+    if (y > 0 && y % 200 === 0) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  // Vertical pass into final Uint8ClampedArray RGBA (un-premultiplying alpha)
+  const out = new Uint8ClampedArray(dstW * dstH * 4);
+  for (let y = 0; y < dstH; y++) {
+    const { left, count, weights, c0, c1 } = yPlan[y];
+    const dstRow = y * dstW * 4;
+    const r0Base = c0 * dstW * 4;
+    const r1Base = c1 * dstW * 4;
+
+    for (let x = 0; x < dstW; x++) {
+      const x4 = x * 4;
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let i = 0; i < count; i++) {
+        const w = weights[i];
+        const idx = (left + i) * dstW * 4 + x4;
+        r += temp[idx] * w;
+        g += temp[idx + 1] * w;
+        b += temp[idx + 2] * w;
+        a += temp[idx + 3] * w;
+      }
+
+      const i0 = r0Base + x4;
+      const i1 = r1Base + x4;
+      const ca = Math.max(Math.min(temp[i0 + 3], temp[i1 + 3]), Math.min(Math.max(temp[i0 + 3], temp[i1 + 3]), a));
+      const cr = Math.max(Math.min(temp[i0], temp[i1]), Math.min(Math.max(temp[i0], temp[i1]), r));
+      const cg = Math.max(Math.min(temp[i0 + 1], temp[i1 + 1]), Math.min(Math.max(temp[i0 + 1], temp[i1 + 1]), g));
+      const cb = Math.max(Math.min(temp[i0 + 2], temp[i1 + 2]), Math.min(Math.max(temp[i0 + 2], temp[i1 + 2]), b));
+
+      const dIdx = dstRow + x4;
+      if (ca > 1e-4) {
+        const invA = 1 / ca;
+        out[dIdx] = Math.round(Math.max(0, Math.min(255, cr * invA)));
+        out[dIdx + 1] = Math.round(Math.max(0, Math.min(255, cg * invA)));
+        out[dIdx + 2] = Math.round(Math.max(0, Math.min(255, cb * invA)));
+        out[dIdx + 3] = Math.round(Math.max(0, Math.min(255, ca * 255)));
+      } else {
+        out[dIdx] = 0;
+        out[dIdx + 1] = 0;
+        out[dIdx + 2] = 0;
+        out[dIdx + 3] = 0;
+      }
+    }
+    if (y > 0 && y % 200 === 0) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Applies Scale-Aware Isotropic Edge-Preserving Filter with Hue-Safe Luminance Ratio USM.
+ * Prevents stair-stepping on diagonal lines, hue shifts, and ringing halos.
  */
 async function applyAdobeQcFilter(canvas, options = {}) {
   const mode = options.profile || 'ai-photorealistic';
   const strength = typeof options.sharpness === 'number' ? options.sharpness : 0.75;
   const denoise = options.denoise !== false;
+  const scaleFactor = Math.max(1, options.scaleFactor || 1);
 
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return;
@@ -166,13 +325,13 @@ async function applyAdobeQcFilter(canvas, options = {}) {
   const totalPixels = width * height;
 
   // Balanced parameters that never over-sharpen or create jagged stair-steps
-  let usmAmount = 0.75 * strength;
+  let usmAmount = 0.78 * strength;
   let overshootAllowance = 0; // Strict 0 overshoot = zero halo and zero jagged clipping
   let flatThreshold = 3.0;
   let denoiseMix = denoise ? 0.35 : 0;
 
   if (mode === 'ai-illustration') {
-    usmAmount = 0.85 * strength;
+    usmAmount = 0.88 * strength;
     overshootAllowance = 0;
     flatThreshold = 4.5;
     denoiseMix = denoise ? 0.55 : 0;
@@ -194,26 +353,31 @@ async function applyAdobeQcFilter(canvas, options = {}) {
     lum[i] = 0.299 * src[idx] + 0.587 * src[idx + 1] + 0.114 * src[idx + 2];
   }
 
-  // Isotropic Gaussian blur pass (smooths equally in horizontal, vertical, and diagonal directions)
+  // Scale-aware separable Gaussian blur pass (radius scales with upscale ratio, capped 1..3)
+  const blurPasses = scaleFactor >= 2.6 ? 3 : scaleFactor >= 1.6 ? 2 : 1;
+  let blurSrc = lum;
   const temp = new Float32Array(totalPixels);
   const blurLum = new Float32Array(totalPixels);
-  for (let y = 0; y < height; y++) {
-    const row = y * width;
-    for (let x = 0; x < width; x++) {
-      const xm1 = x > 0 ? x - 1 : x;
-      const xp1 = x < width - 1 ? x + 1 : x;
-      temp[row + x] = 0.25 * lum[row + xm1] + 0.5 * lum[row + x] + 0.25 * lum[row + xp1];
+  for (let pass = 0; pass < blurPasses; pass++) {
+    for (let y = 0; y < height; y++) {
+      const row = y * width;
+      for (let x = 0; x < width; x++) {
+        const xm1 = x > 0 ? x - 1 : x;
+        const xp1 = x < width - 1 ? x + 1 : x;
+        temp[row + x] = 0.25 * blurSrc[row + xm1] + 0.5 * blurSrc[row + x] + 0.25 * blurSrc[row + xp1];
+      }
     }
-  }
-  for (let y = 0; y < height; y++) {
-    const ym1 = y > 0 ? y - 1 : y;
-    const yp1 = y < height - 1 ? y + 1 : y;
-    const row = y * width;
-    const rowM1 = ym1 * width;
-    const rowP1 = yp1 * width;
-    for (let x = 0; x < width; x++) {
-      blurLum[row + x] = 0.25 * temp[rowM1 + x] + 0.5 * temp[row + x] + 0.25 * temp[rowP1 + x];
+    for (let y = 0; y < height; y++) {
+      const ym1 = y > 0 ? y - 1 : y;
+      const yp1 = y < height - 1 ? y + 1 : y;
+      const row = y * width;
+      const rowM1 = ym1 * width;
+      const rowP1 = yp1 * width;
+      for (let x = 0; x < width; x++) {
+        blurLum[row + x] = 0.25 * temp[rowM1 + x] + 0.5 * temp[row + x] + 0.25 * temp[rowP1 + x];
+      }
     }
+    blurSrc = blurLum;
   }
 
   // Copy alpha channel
@@ -261,30 +425,37 @@ async function applyAdobeQcFilter(canvas, options = {}) {
             out[idx + c] = Math.round(center * (1 - denoiseMix) + avg * denoiseMix);
           }
         } else {
-          // Edge area: gentle isotropic unsharp mask strictly clamped to 3x3 local [min, max]
+          // Edge area: isotropic unsharp mask strictly clamped to 3x3 local [min, max]
           const lCenter = lum[p];
           const lumDelta = (lCenter - blurLum[p]) * usmAmount;
 
-          const l1 = lum[rowUp + x];
-          const l2 = lum[rowDown + x];
-          const l3 = lum[row + xm1];
-          const l4 = lum[row + xp1];
-          const l5 = lum[rowUp + xm1];
-          const l6 = lum[rowUp + xp1];
-          const l7 = lum[rowDown + xm1];
-          const l8 = lum[rowDown + xp1];
-
-          const minL = Math.min(lCenter, l1, l2, l3, l4, l5, l6, l7, l8);
-          const maxL = Math.max(lCenter, l1, l2, l3, l4, l5, l6, l7, l8);
+          const minL = Math.min(
+            lCenter,
+            lum[rowUp + x], lum[rowDown + x], lum[row + xm1], lum[row + xp1],
+            lum[rowUp + xm1], lum[rowUp + xp1], lum[rowDown + xm1], lum[rowDown + xp1]
+          );
+          const maxL = Math.max(
+            lCenter,
+            lum[rowUp + x], lum[rowDown + x], lum[row + xm1], lum[row + xp1],
+            lum[rowUp + xm1], lum[rowUp + xp1], lum[rowDown + xm1], lum[rowDown + xp1]
+          );
 
           const targetLum = Math.max(
             minL - overshootAllowance,
             Math.min(maxL + overshootAllowance, lCenter + lumDelta)
           );
-          const appliedDelta = targetLum - lCenter;
 
-          for (let c = 0; c < 3; c++) {
-            out[idx + c] = Math.max(0, Math.min(255, Math.round(src[idx + c] + appliedDelta)));
+          // Hue-preserving luminance scaling on midtones/highlights, additive fallback near black
+          if (lCenter > 12) {
+            const ratio = targetLum / lCenter;
+            for (let c = 0; c < 3; c++) {
+              out[idx + c] = Math.max(0, Math.min(255, Math.round(src[idx + c] * ratio)));
+            }
+          } else {
+            const appliedDelta = targetLum - lCenter;
+            for (let c = 0; c < 3; c++) {
+              out[idx + c] = Math.max(0, Math.min(255, Math.round(src[idx + c] + appliedDelta)));
+            }
           }
         }
       }
@@ -299,52 +470,39 @@ async function applyAdobeQcFilter(canvas, options = {}) {
 }
 
 /**
- * Smooth Anti-Aliased Upscaler with Pre-Denoising (No Jagged Stair-Steps)
+ * High-Precision Lanczos-3 Anti-Ringing Upscaler with Pre-Denoising
  */
 export async function upscaleImage(sourceUrl, origW, origH, settings = {}) {
   const img = typeof sourceUrl === 'string' ? await loadImageElement(sourceUrl) : sourceUrl;
   const scalePreset = settings.targetScale || '8mp';
   const { width: targetW, height: targetH, megapixels } = computeTargetDimensions(origW, origH, scalePreset);
 
-  let currW = origW;
-  let currH = origH;
-
-  let canvas = document.createElement('canvas');
-  canvas.width = currW;
-  canvas.height = currH;
-  let ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, 0, 0, currW, currH);
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = origW;
+  srcCanvas.height = origH;
+  const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+  srcCtx.drawImage(img, 0, 0, origW, origH);
 
   // Step 1: Clean JPEG mosquito noise and compression smudges at original resolution BEFORE upscaling
-  preCleanSourceCanvas(canvas);
+  preCleanSourceCanvas(srcCanvas);
 
-  // Step 2: Smooth progressive bicubic upscale (1.5x per pass, WITHOUT intermediate jagged sharpening)
-  while (currW < targetW || currH < targetH) {
-    const nextW = Math.min(targetW, Math.round(currW * 1.5));
-    const nextH = Math.min(targetH, Math.round(currH * 1.5));
+  // Step 2: Single-pass Float32 Lanczos-3 resampling with Anti-Ringing Clamping
+  const srcImageData = srcCtx.getImageData(0, 0, origW, origH);
+  const resampled = await lanczos3Resample(srcImageData.data, origW, origH, targetW, targetH);
 
-    const stepCanvas = document.createElement('canvas');
-    stepCanvas.width = nextW;
-    stepCanvas.height = nextH;
-    const stepCtx = stepCanvas.getContext('2d', { willReadFrequently: true });
-    stepCtx.imageSmoothingEnabled = true;
-    stepCtx.imageSmoothingQuality = 'high';
-    stepCtx.drawImage(canvas, 0, 0, nextW, nextH);
+  const canvas = document.createElement('canvas');
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const dstImgData = new ImageData(resampled, targetW, targetH);
+  ctx.putImageData(dstImgData, 0, 0);
 
-    canvas = stepCanvas;
-    currW = nextW;
-    currH = nextH;
-
-    if (currW >= targetW && currH >= targetH) break;
-  }
-
-  // Step 3: Single isotropic edge-restoration pass at target resolution
+  // Step 3: Scale-aware isotropic edge-restoration pass at target resolution
   await applyAdobeQcFilter(canvas, {
     profile: settings.profile || 'ai-photorealistic',
     sharpness: settings.sharpness ?? 0.75,
-    denoise: settings.denoise !== false
+    denoise: settings.denoise !== false,
+    scaleFactor: Math.max(1, targetW / origW)
   });
 
   const mimeType = settings.outputFormat || 'image/jpeg';
@@ -373,271 +531,6 @@ function colorDistRgb(r1, g1, b1, r2, g2, b2) {
 
 function colorDistPct(r, g, b, bg) {
   return (colorDistRgb(r, g, b, bg[0], bg[1], bg[2]) / 441.67) * 100;
-}
-
-/**
- * Finds the dominant background color along all 4 image edges via 4-bit color histogram
- */
-function detectDominantBorderColor(data, w, h) {
-  const bins = new Map();
-  const samplePixel = (x, y) => {
-    const idx = (y * w + x) * 4;
-    if (data[idx + 3] < 128) return;
-    const key = ((data[idx] >> 4) << 8) | ((data[idx + 1] >> 4) << 4) | (data[idx + 2] >> 4);
-    let bin = bins.get(key);
-    if (!bin) {
-      bin = [0, 0, 0, 0];
-      bins.set(key, bin);
-    }
-    bin[0] += data[idx];
-    bin[1] += data[idx + 1];
-    bin[2] += data[idx + 2];
-    bin[3]++;
-  };
-
-  for (let x = 0; x < w; x++) {
-    samplePixel(x, 0);
-    if (h > 1) samplePixel(x, h - 1);
-  }
-  for (let y = 1; y < h - 1; y++) {
-    samplePixel(0, y);
-    if (w > 1) samplePixel(w - 1, y);
-  }
-
-  if (bins.size === 0) return [255, 255, 255];
-  let best = null;
-  for (const bin of bins.values()) {
-    if (!best || bin[3] > best[3]) best = bin;
-  }
-  return [
-    Math.round(best[0] / best[3]),
-    Math.round(best[1] / best[3]),
-    Math.round(best[2] / best[3])
-  ];
-}
-
-/**
- * Clears newly removed pixels and decontaminates anti-aliased boundary pixels
- * without leaking transparency into solid interior colors.
- */
-function applyBoundaryMatte(data, orig, newlyRemoved, fullMask, w, h, bg, tolerance, fillWhite) {
-  const total = w * h;
-
-  // 1. Clear removed region first
-  for (let p = 0; p < total; p++) {
-    if (!newlyRemoved[p]) continue;
-    const idx = p * 4;
-    if (fillWhite) {
-      data[idx] = 255;
-      data[idx + 1] = 255;
-      data[idx + 2] = 255;
-      data[idx + 3] = 255;
-    } else {
-      data[idx] = 0;
-      data[idx + 1] = 0;
-      data[idx + 2] = 0;
-      data[idx + 3] = 0;
-    }
-  }
-
-  // 2. Decontaminate only the 1-2px boundary touching newlyRemoved
-  const band = [];
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    for (let x = 0; x < w; x++) {
-      const p = row + x;
-      if (fullMask[p] || orig[p * 4 + 3] < 128) continue;
-
-      let immediate = false;
-      let near = false;
-      for (let dy = -2; dy <= 2 && !immediate; dy++) {
-        const ny = y + dy;
-        if (ny < 0 || ny >= h) continue;
-        const nRow = ny * w;
-        for (let dx = -2; dx <= 2; dx++) {
-          const nx = x + dx;
-          if (nx < 0 || nx >= w) continue;
-          if (newlyRemoved[nRow + nx]) {
-            near = true;
-            if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
-              immediate = true;
-              break;
-            }
-          }
-        }
-      }
-      if (!near) continue;
-      if (immediate || colorDistPct(orig[p * 4], orig[p * 4 + 1], orig[p * 4 + 2], bg) <= tolerance * 1.4) {
-        band.push(p, immediate ? 1 : 0);
-      }
-    }
-  }
-
-  const updates = [];
-  for (let bIdx = 0; bIdx < band.length; bIdx += 2) {
-    const p = band[bIdx];
-    const isImmediate = band[bIdx + 1] === 1;
-    const x = p % w;
-    const y = (p - x) / w;
-    const i = p * 4;
-
-    const findBestFg = (radius) => {
-      let bestScore = -1;
-      let bestQ = -1;
-      for (let dy = -radius; dy <= radius; dy++) {
-        const ny = y + dy;
-        if (ny < 0 || ny >= h) continue;
-        const nRow = ny * w;
-        for (let dx = -radius; dx <= radius; dx++) {
-          const nx = x + dx;
-          if (nx < 0 || nx >= w) continue;
-          const q = nRow + nx;
-          if (fullMask[q] || orig[q * 4 + 3] < 128) continue;
-          const qi = q * 4;
-          const dist = colorDistRgb(orig[qi], orig[qi + 1], orig[qi + 2], bg[0], bg[1], bg[2]);
-          if (dist < 42) continue;
-          // Prefer strong contrast from bg while breaking ties by spatial proximity
-          const score = dist - (dx * dx + dy * dy) * 2;
-          if (score > bestScore) {
-            bestScore = score;
-            bestQ = q;
-          }
-        }
-      }
-      return bestQ;
-    };
-
-    let f = findBestFg(2);
-    if (f < 0) f = findBestFg(4);
-
-    if (f >= 0) {
-      const j = f * 4;
-      const vx = orig[j] - bg[0];
-      const vy = orig[j + 1] - bg[1];
-      const vz = orig[j + 2] - bg[2];
-      const vLenSq = vx * vx + vy * vy + vz * vz;
-      const cx = orig[i] - bg[0];
-      const cy = orig[i + 1] - bg[1];
-      const cz = orig[i + 2] - bg[2];
-      const a = Math.max(0, Math.min(1, (cx * vx + cy * vy + cz * vz) / vLenSq));
-
-      // Collinearity check prevents eating solid interior colors (e.g., gold next to brown outline)
-      const rx = cx - a * vx;
-      const ry = cy - a * vy;
-      const rz = cz - a * vz;
-      const perpDist = Math.sqrt(rx * rx + ry * ry + rz * rz);
-
-      if (perpDist <= 42 && a < 0.98) {
-        if (fillWhite) {
-          updates.push(
-            i,
-            Math.round(orig[j] * a + 255 * (1 - a)),
-            Math.round(orig[j + 1] * a + 255 * (1 - a)),
-            Math.round(orig[j + 2] * a + 255 * (1 - a)),
-            255
-          );
-        } else if (a < 0.04) {
-          updates.push(i, 0, 0, 0, 0);
-        } else {
-          updates.push(i, orig[j], orig[j + 1], orig[j + 2], Math.round(a * orig[i + 3]));
-        }
-      }
-    } else if (isImmediate) {
-      const distPct = colorDistPct(orig[i], orig[i + 1], orig[i + 2], bg);
-      if (distPct <= tolerance * 1.2) {
-        const a = Math.max(0, Math.min(1, distPct / (tolerance * 1.2)));
-        if (fillWhite) {
-          updates.push(
-            i,
-            Math.round(orig[i] * a + 255 * (1 - a)),
-            Math.round(orig[i + 1] * a + 255 * (1 - a)),
-            Math.round(orig[i + 2] * a + 255 * (1 - a)),
-            255
-          );
-        } else {
-          updates.push(i, orig[i], orig[i + 1], orig[i + 2], Math.round(a * orig[i + 3]));
-        }
-      }
-    }
-  }
-
-  for (let u = 0; u < updates.length; u += 5) {
-    const i = updates[u];
-    data[i] = updates[u + 1];
-    data[i + 1] = updates[u + 2];
-    data[i + 2] = updates[u + 3];
-    data[i + 3] = updates[u + 4];
-  }
-}
-
-function autoCenterCutoutCanvas(srcCanvas, fillWhite, paddingRatio = 0.08) {
-  const w = srcCanvas.width;
-  const h = srcCanvas.height;
-  const ctx = srcCanvas.getContext('2d', { willReadFrequently: true });
-  const data = ctx.getImageData(0, 0, w, h).data;
-
-  let minX = w, minY = h, maxX = -1, maxY = -1, fgCount = 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const idx = (y * w + x) * 4;
-      const isFg = fillWhite
-        ? (data[idx] < 245 || data[idx + 1] < 245 || data[idx + 2] < 245)
-        : (data[idx + 3] >= 24);
-      if (isFg) {
-        fgCount++;
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-
-  if (fgCount < 64 || maxX <= minX || maxY <= minY) return srcCanvas;
-
-  const objW = maxX - minX + 1;
-  const objH = maxY - minY + 1;
-  const maxContentW = Math.max(1, Math.round(w * (1 - paddingRatio * 2)));
-  const maxContentH = Math.max(1, Math.round(h * (1 - paddingRatio * 2)));
-  const fitScale = Math.min(1, maxContentW / objW, maxContentH / objH);
-  const drawW = Math.max(1, Math.round(objW * fitScale));
-  const drawH = Math.max(1, Math.round(objH * fitScale));
-  const dstX = Math.round((w - drawW) / 2);
-  const dstY = Math.round((h - drawH) / 2);
-
-  const outCanvas = document.createElement('canvas');
-  outCanvas.width = w;
-  outCanvas.height = h;
-  const outCtx = outCanvas.getContext('2d');
-  if (fillWhite) {
-    outCtx.fillStyle = '#FFFFFF';
-    outCtx.fillRect(0, 0, w, h);
-  }
-  outCtx.imageSmoothingEnabled = true;
-  outCtx.imageSmoothingQuality = 'high';
-  outCtx.drawImage(srcCanvas, minX, minY, objW, objH, dstX, dstY, drawW, drawH);
-  return outCanvas;
-}
-
-function renderCanvasToCutoutResult(canvas, fillWhite) {
-  const mime = fillWhite ? 'image/jpeg' : 'image/png';
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      blob => {
-        if (!blob) return reject(new Error('Gagal mengekspor gambar hasil isolasi.'));
-        resolve({
-          changed: true,
-          blob,
-          url: URL.createObjectURL(blob),
-          width: canvas.width,
-          height: canvas.height,
-          isTransparent: !fillWhite
-        });
-      },
-      mime,
-      fillWhite ? 0.96 : undefined
-    );
-  });
 }
 
 /**

@@ -4293,21 +4293,23 @@ function smoothSVG(img,pal,s,ow,oh){
    body+='<path fill="'+color+'" fill-rule="evenodd" d="'+d+'"/>';
   }
  }
- // Satu path per warna; lebar 2 piksel layar di peramban (1 piksel ke tiap sisi sambungan), 2 satuan gambar di editor yang mengabaikan vector-effect.
- let under='';for(const [color,list] of seamUnderlay)under+='<path fill="none" stroke="'+color+'" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke" d="'+list.join('')+'"/>';
+ // Satu path per warna; lebar 1.5 unit viewBox agar kompatibel penuh di SVG, Illustrator, dan EPS.
+ let under='';for(const [color,list] of seamUnderlay)under+='<path fill="none" stroke="'+color+'" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="'+list.join('')+'"/>';
  if(under)body='<g id="penutup-sambungan">'+under+'</g>'+body;
  return '<svg xmlns="http://www.w3.org/2000/svg" width="'+ow+'" height="'+oh+'" viewBox="0 0 '+img.width+' '+img.height+'">'+body+'</svg>';
 }
 
-// Select a bounded palette for the automatic color fallback using raster evidence.
+// Select a bounded palette for the automatic color fallback using raster evidence up to maxColors.
 // Explicit illustration settings still use the user's chosen color count.
-function automaticPalette(d,minDistance){
+function automaticPalette(d,minDistance,maxColors=16){
  const hist=new Map();let total=0;
  for(let i=0;i<d.length;i+=4){if(d[i+3]<128)continue;const key=((d[i]>>3)<<10)|((d[i+1]>>3)<<5)|(d[i+2]>>3);let b=hist.get(key);if(!b){b=[0,0,0,0];hist.set(key,b);}b[0]+=d[i];b[1]+=d[i+1];b[2]+=d[i+2];b[3]++;total++;}
  if(!total)return [];
  const bins=[...hist.values()].map(b=>({r:b[0]/b[3],g:b[1]/b[3],b:b[2]/b[3],n:b[3]}));
+ const cap=Math.max(2,Math.min(32,maxColors||16));
+ const counts=[6,8,12,16,24,32].filter(c=>c<cap);counts.push(cap);
  let best=[];
- for(const count of [6,8,12,16]){
+ for(const count of counts){
   const pal=paletteFor(d,count,minDistance);if(!pal.length)return pal;best=pal;let bad=0,accentLost=false;
   for(const b of bins){let error=Infinity;for(const p of pal)error=Math.min(error,(b.r-p.r)**2+(b.g-p.g)**2+(b.b-p.b)**2);
    if(error>24*24)bad+=b.n;
@@ -4856,16 +4858,19 @@ function paleLogoMasks(d,w,h,pal,scale,allow,noisy){
  return {W,H,bg,layers,label};
 }
 
-// Palet logo: jumlah warna dinaikkan sampai tidak ada warna bidang rata yang tertinggal.
-function logoPalette(d,w,h,flatPeaks){
+// Palet logo: jumlah warna dinaikkan sampai tidak ada warna bidang rata yang tertinggal (dibatasi maxColors).
+function logoPalette(d,w,h,flatPeaks,maxColors=24){
  const bins=new Map();let total=0;
  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){const i=(y*w+x)*4;if(d[i+3]<250)continue;total++;let flat=true;
   for(let dy=-1;dy<=1&&flat;dy++)for(let dx=-1;dx<=1;dx++){const z=i+(dy*w+dx)*4;if(d[z+3]<250||Math.abs(d[z]-d[i])>10||Math.abs(d[z+1]-d[i+1])>10||Math.abs(d[z+2]-d[i+2])>10){flat=false;break;}}
   if(!flat)continue;const key=((d[i]>>3)<<10)|((d[i+1]>>3)<<5)|(d[i+2]>>3);let b=bins.get(key);if(!b){b=[0,0,0,0];bins.set(key,b);}b[0]+=d[i];b[1]+=d[i+1];b[2]+=d[i+2];b[3]++;}
  const solid=[...bins.values()].map(b=>[b[0]/b[3],b[1]/b[3],b[2]/b[3],b[3]]);let pal=[];
- for(const count of [8,12,16,24]){pal=paletteFor(d,count,24);if(!pal.length)break;let missing=0;for(const b of solid){let e=Infinity;for(const p of pal){const v=(b[0]-p.r)**2+(b[1]-p.g)**2+(b[2]-p.b)**2;if(v<e)e=v;}if(e>24*24)missing+=b[3];}if(missing<Math.max(12,total*.0005))break;}
+ const cap=Math.max(3,Math.min(32,maxColors||24));
+ const counts=[8,12,16,24,32].filter(c=>c<cap);counts.push(cap);
+ for(const count of counts){pal=paletteFor(d,count,24);if(!pal.length)break;let missing=0;for(const b of solid){let e=Infinity;for(const p of pal){const v=(b[0]-p.r)**2+(b[1]-p.g)**2+(b[2]-p.b)**2;if(v<e)e=v;}if(e>24*24)missing+=b[3];}if(missing<Math.max(12,total*.0005))break;}
  if(flatPeaks!==false&&pal.length){const need=Math.max(150,total*.0003),big=solid.filter(b=>b[3]>=need).sort((a,b)=>b[3]-a[3]);
-  for(const b of big){if(pal.length>=28)break;let e=Infinity;for(const p of pal){const v=(b[0]-p.r)**2+(b[1]-p.g)**2+(b[2]-p.b)**2;if(v<e)e=v;}if(e<=12*12)continue;
+  const peakCap=Math.max(cap,28);
+  for(const b of big){if(pal.length>=peakCap)break;let e=Infinity;for(const p of pal){const v=(b[0]-p.r)**2+(b[1]-p.g)**2+(b[2]-p.b)**2;if(v<e)e=v;}if(e<=12*12)continue;
    let core=0,ring=0,r=0,g=0,bl=0;for(const o of solid){const v=(b[0]-o[0])**2+(b[1]-o[1])**2+(b[2]-o[2])**2;if(v<=36){core+=o[3];r+=o[0]*o[3];g+=o[1]*o[3];bl+=o[2]*o[3];}else if(v<=144)ring+=o[3];}
    if(core>=need&&ring<.6*core)pal.push({r:Math.round(r/core),g:Math.round(g/core),b:Math.round(bl/core),a:255,peak:true});}}
  return pal;
@@ -6218,7 +6223,7 @@ function fineDetailShare(d,w,h){
  return n?big/n:0;
 }
 function colorLogoCandidate(d,w,h,s,ow,oh){
- const forced=s.mode==='logoColor'||s.mode==='logo',pal=s.lookalike===true?mergeLookalikeColors(d,w,h,logoPalette(d,w,h,s.flatPeaks)):s.lookalike===false?logoPalette(d,w,h,s.flatPeaks):mergeDarkTwins(d,w,h,logoPalette(d,w,h,s.flatPeaks)),interiorColors=logoInteriorColors(d,w,h,pal);
+ const forced=s.mode==='logoColor'||s.mode==='logo',pal=s.lookalike===true?mergeLookalikeColors(d,w,h,logoPalette(d,w,h,s.flatPeaks,s.colors)):s.lookalike===false?logoPalette(d,w,h,s.flatPeaks,s.colors):mergeDarkTwins(d,w,h,logoPalette(d,w,h,s.flatPeaks,s.colors)),interiorColors=logoInteriorColors(d,w,h,pal);
  if(s.extraColors&&pal.length)for(const c of s.extraColors){if(pal.some(p=>Math.hypot(p.r-c[0],p.g-c[1],p.b-c[2])<(s.extraGap??24)))continue;const q={r:c[0],g:c[1],b:c[2],forced:true};pal.push(q);interiorColors.add(q);}
  let hasFlatMixture=false,again=true;while(again&&pal.length>2){again=false;let best=-1,error=16*16;for(let k=0;k<pal.length;k++)for(let a=0;a<pal.length;a++)for(let b=a+1;b<pal.length;b++){if(k===a||k===b)continue;const A=pal[a],B=pal[b],P=pal[k],v=[B.r-A.r,B.g-A.g,B.b-A.b],u=[P.r-A.r,P.g-A.g,P.b-A.b],den=v.reduce((n,x)=>n+x*x,0),t=u.reduce((n,x,i)=>n+x*v[i],0)/den;if(t<.04||t>.96)continue;const e=u.reduce((n,x,i)=>n+(x-t*v[i])**2,0);if(e<16*16&&interiorColors.has(pal[k]))hasFlatMixture=true;if(e<error&&!interiorColors.has(pal[k])){error=e;best=k;}}if(best>=0){pal.splice(best,1);again=true;}}
  if(!pal.length)return null;
@@ -6505,7 +6510,7 @@ self.onmessage=({data:m})=>{detailKeep=null;stackTrace.ink=!!(m.settings&&m.sett
  if(['auto','mono','bw','logo'].includes(s.mode)){const result=monoCandidate(prepare(pre==='auto'?'none':pre),w,h,s.mode==='logo'?{...s,mode:'mono'}:s,m.originalWidth,m.originalHeight);if(result){postMessage(result);return;}s.mode='color';} d=prepare(pre==='auto'?'edge':pre);if(d===rawPixels)d=d.slice();
  postMessage({phase:'Memisahkan warna dan transparansi…'});
  for(let i=0;i<d.length;i+=4){if(d[i+3]<128||(s.removeWhite&&d[i]>=s.whiteLevel&&d[i+1]>=s.whiteLevel&&d[i+2]>=s.whiteLevel)){d[i]=d[i+1]=d[i+2]=d[i+3]=0;transparent=true}else{d[i+3]=255;if(s.mode==='bw'){let v=.2126*d[i]+.7152*d[i+1]+.0722*d[i+2]>=s.threshold?255:0;d[i]=d[i+1]=d[i+2]=v}}}
- let pal=s.mode==='bw'?[{r:0,g:0,b:0,a:255},{r:255,g:255,b:255,a:255}]:automaticColor?automaticPalette(d,s.clean?8+s.clean*3:0):paletteFor(d,s.colors,s.clean?8+s.clean*3:0);
+ let pal=s.mode==='bw'?[{r:0,g:0,b:0,a:255},{r:255,g:255,b:255,a:255}]:automaticColor?automaticPalette(d,s.clean?8+s.clean*3:0,s.colors):paletteFor(d,s.colors,s.clean?8+s.clean*3:0);
  if(!pal.length)throw Error('Tidak ada area terlihat. Matikan penghapus putih atau pilih gambar lain.');
  // Snap opaque pixels to the opaque palette first, preserving transparent pixels exactly.
  const cache=new Map();for(let i=0;i<d.length;i+=4){if(!d[i+3])continue;const key=(d[i]<<16)|(d[i+1]<<8)|d[i+2];let k=cache.get(key);if(k===undefined){let dd=Infinity;k=0;for(let j=0;j<pal.length;j++){const p=pal[j],v=(d[i]-p.r)**2+(d[i+1]-p.g)**2+(d[i+2]-p.b)**2;if(v<dd){dd=v;k=j}}cache.set(key,k)}d[i]=pal[k].r;d[i+1]=pal[k].g;d[i+2]=pal[k].b}

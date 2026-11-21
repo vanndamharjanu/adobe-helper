@@ -84,7 +84,7 @@ ${subjectBag}
 }
 
 /**
- * Injects XMP APP1 segment into JPEG Blob (removes any existing XMP APP1 segment first to avoid duplicates)
+ * Injects XMP APP1 segment into JPEG Blob (removes any existing XMP APP1 segments first to avoid duplicates)
  */
 export async function embedXmpInJpeg(jpegBlob, metadata) {
   try {
@@ -113,30 +113,75 @@ export async function embedXmpInJpeg(jpegBlob, metadata) {
     app1Segment.set(headerBytes, 4);
     app1Segment.set(xmpBytes, 4 + headerBytes.length);
 
-    // Locate insertion offset right after JFIF/APP0 (or right after SOI 0xFFD8)
+    const startsWithSig = (pos, sig) => {
+      if (pos + sig.length > bytes.length) return false;
+      for (let i = 0; i < sig.length; i++) {
+        if (bytes[pos + i] !== sig[i]) return false;
+      }
+      return true;
+    };
+    const xmpSig = encoder.encode('http://ns.adobe.com/xap/1.0/\0');
+    const extXmpSig = encoder.encode('http://ns.adobe.com/xmp/extension/\0');
+
+    // Collect slices keeping all non-XMP segments and find insertion point right after APP0 (or SOI)
+    const chunks = [];
+    let chunkStart = 0;
     let insertOffset = 2;
+    let foundApp0 = false;
     let offset = 2;
-    while (offset < bytes.length - 4 && bytes[offset] === 0xFF) {
+
+    while (offset < bytes.length - 1) {
+      if (bytes[offset] !== 0xFF) break;
+      while (offset < bytes.length - 1 && bytes[offset + 1] === 0xFF) offset++;
+      if (offset >= bytes.length - 1) break;
+
       const marker = bytes[offset + 1];
-      if (marker === 0xFF || marker === 0x00) {
-        offset++;
+      if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+        offset += 2;
         continue;
       }
-      if (marker === 0xDA || (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xCC)) {
+      // Stop scanning at Start of Scan (0xDA), EOI (0xD9), or SOF markers
+      if (marker === 0xDA || marker === 0xD9 || (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xCC)) {
         break;
       }
+      if (offset + 3 >= bytes.length) break;
       const len = (bytes[offset + 2] << 8) | bytes[offset + 3];
-      if (marker === 0xE0) {
-        insertOffset = offset + 2 + len;
-        break;
+      const segEnd = offset + 2 + len;
+      if (len < 2 || segEnd > bytes.length) break;
+
+      if (marker === 0xE0 && !foundApp0) {
+        foundApp0 = true;
+        insertOffset = segEnd;
       }
-      offset += 2 + len;
+
+      if (marker === 0xE1 && (startsWithSig(offset + 4, xmpSig) || startsWithSig(offset + 4, extXmpSig))) {
+        if (offset > chunkStart) {
+          chunks.push(bytes.subarray(chunkStart, offset));
+        }
+        if (insertOffset === segEnd) insertOffset = offset;
+        else if (insertOffset > offset) insertOffset -= (segEnd - offset);
+        chunkStart = segEnd;
+      }
+      offset = segEnd;
     }
 
-    const output = new Uint8Array(bytes.length + app1Segment.length);
-    output.set(bytes.subarray(0, insertOffset), 0);
-    output.set(app1Segment, insertOffset);
-    output.set(bytes.subarray(insertOffset), insertOffset + app1Segment.length);
+    if (chunkStart < bytes.length) {
+      chunks.push(bytes.subarray(chunkStart));
+    }
+
+    const strippedLen = chunks.reduce((sum, c) => sum + c.length, 0);
+    const stripped = new Uint8Array(strippedLen);
+    let pos = 0;
+    for (const c of chunks) {
+      stripped.set(c, pos);
+      pos += c.length;
+    }
+
+    const safeInsert = Math.min(stripped.length, Math.max(2, insertOffset));
+    const output = new Uint8Array(stripped.length + app1Segment.length);
+    output.set(stripped.subarray(0, safeInsert), 0);
+    output.set(app1Segment, safeInsert);
+    output.set(stripped.subarray(safeInsert), safeInsert + app1Segment.length);
 
     return new Blob([output], { type: 'image/jpeg' });
   } catch (err) {
@@ -157,7 +202,7 @@ function crc32(bytes) {
 }
 
 /**
- * Injects XMP iTXt chunk into PNG Blob right after IHDR chunk (offset 33)
+ * Injects XMP iTXt chunk into PNG Blob right after IHDR chunk (removes any existing XMP iTXt first)
  */
 export async function embedXmpInPng(pngBlob, metadata) {
   try {
@@ -187,10 +232,45 @@ export async function embedXmpInPng(pngBlob, metadata) {
     const crc = crc32(chunk.subarray(4, 8 + dataLen));
     view.setUint32(8 + dataLen, crc);
 
-    const output = new Uint8Array(bytes.length + chunk.length);
-    output.set(bytes.subarray(0, 33), 0);
-    output.set(chunk, 33);
-    output.set(bytes.subarray(33), 33 + chunk.length);
+    // Strip any existing XMP iTXt chunk while locating exact end of IHDR
+    const srcView = new DataView(buffer);
+    const keptParts = [bytes.subarray(0, 8)];
+    let pos = 8;
+    let ihdrEndIdx = 1; // index in keptParts right after IHDR
+
+    while (pos + 12 <= bytes.length) {
+      const cLen = srcView.getUint32(pos);
+      const totalLen = 12 + cLen;
+      if (pos + totalLen > bytes.length) {
+        keptParts.push(bytes.subarray(pos));
+        break;
+      }
+      const cType = String.fromCharCode(bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]);
+      let isExistingXmp = false;
+      if (cType === 'iTXt' && cLen >= 18) {
+        const kw = new TextDecoder().decode(bytes.subarray(pos + 8, pos + 26));
+        if (kw.startsWith('XML:com.adobe.xmp\0')) {
+          isExistingXmp = true;
+        }
+      }
+      if (!isExistingXmp) {
+        keptParts.push(bytes.subarray(pos, pos + totalLen));
+        if (cType === 'IHDR') {
+          ihdrEndIdx = keptParts.length;
+        }
+      }
+      pos += totalLen;
+      if (cType === 'IEND') break;
+    }
+
+    keptParts.splice(ihdrEndIdx, 0, chunk);
+    const totalOut = keptParts.reduce((s, p) => s + p.length, 0);
+    const output = new Uint8Array(totalOut);
+    let outPos = 0;
+    for (const part of keptParts) {
+      output.set(part, outPos);
+      outPos += part.length;
+    }
 
     return new Blob([output], { type: 'image/png' });
   } catch (err) {

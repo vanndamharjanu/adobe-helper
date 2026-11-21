@@ -7,10 +7,12 @@ import {
   sanitizeAdobeTitle,
   sanitizeAdobeKeywords,
   getTodayApiUsage,
-  generateCustomFlowPrompts
+  generateCustomFlowPrompts,
+  researchLiveMicrostockTrends
 } from './gemini-vision.js';
 import {
   ADOBE_CATEGORIES,
+  escapeXml,
   embedMetadataIntoBlob,
   getExportFilename,
   generateAgencyCsv,
@@ -163,8 +165,11 @@ const state = {
     sharpness: 0.75,
     outputFormat: 'image/jpeg',
     jpegQuality: 95,
+    vectorMode: 'auto',
+    vectorQuality: 'accurate',
     vectorColors: 18,
     minSpeckleArea: 12,
+    vectorRemoveWhite: false,
     autoIsolateBg: false,
     bgTolerance: 16,
     bgMode: 'transparent',
@@ -199,8 +204,11 @@ function loadSavedSettings() {
     if (typeof saved.sharpness === 'number' && saved.sharpness >= 0.3 && saved.sharpness <= 1) s.sharpness = saved.sharpness;
     if (['image/jpeg', 'image/png'].includes(saved.outputFormat)) s.outputFormat = saved.outputFormat;
     if ([92, 95, 98].includes(Number(saved.jpegQuality))) s.jpegQuality = Number(saved.jpegQuality);
+    if (['auto', 'logoColor', 'color', 'bw', 'pixel'].includes(saved.vectorMode)) s.vectorMode = saved.vectorMode;
+    if (['accurate', 'simple'].includes(saved.vectorQuality)) s.vectorQuality = saved.vectorQuality;
     if (typeof saved.vectorColors === 'number' && saved.vectorColors >= 4 && saved.vectorColors <= 32) s.vectorColors = saved.vectorColors;
     if (typeof saved.minSpeckleArea === 'number' && saved.minSpeckleArea >= 4 && saved.minSpeckleArea <= 40) s.minSpeckleArea = saved.minSpeckleArea;
+    if (typeof saved.vectorRemoveWhite === 'boolean') s.vectorRemoveWhite = saved.vectorRemoveWhite;
     if (typeof saved.autoIsolateBg === 'boolean') s.autoIsolateBg = saved.autoIsolateBg;
     if (typeof saved.bgTolerance === 'number' && saved.bgTolerance >= 5 && saved.bgTolerance <= 55) s.bgTolerance = saved.bgTolerance;
     if (['transparent', 'white'].includes(saved.bgMode)) s.bgMode = saved.bgMode;
@@ -283,6 +291,13 @@ function applySettingsToSidebarUI() {
   if (selFmt) selFmt.value = s.outputFormat;
   const selQual = document.getElementById('selectJpegQuality');
   if (selQual) selQual.value = String(s.jpegQuality);
+
+  const selVecMode = document.getElementById('selectVectorMode');
+  if (selVecMode) selVecMode.value = s.vectorMode;
+  const selVecQual = document.getElementById('selectVectorQuality');
+  if (selVecQual) selVecQual.value = s.vectorQuality;
+  const chkVecWhite = document.getElementById('checkVectorRemoveWhite');
+  if (chkVecWhite) chkVecWhite.checked = s.vectorRemoveWhite;
 
   const rangeVecCol = document.getElementById('rangeVectorColors');
   const lblVecCol = document.getElementById('labelVectorColors');
@@ -894,8 +909,12 @@ async function runSingleVectorize(item) {
     const srcUrl = item.isolatedUrl || item.previewUrl;
 
     const vec = await convertImageToVector(srcUrl, {
+      mode: state.settings.vectorMode,
+      quality: state.settings.vectorQuality,
+      smooth: state.settings.vectorQuality === 'simple' ? 3 : 2,
       colors: state.settings.vectorColors,
       minSpeckleArea: state.settings.minSpeckleArea,
+      removeWhite: state.settings.vectorRemoveWhite,
       removeBackground: !!state.settings.autoIsolateBg && !item.isIsolated,
       removeInternalHoles: Boolean(state.settings.removeInternalHoles),
       metadata: item.metadata || {},
@@ -1658,16 +1677,123 @@ document.addEventListener('DOMContentLoaded', () => {
 
   window.addEventListener('gemini-usage-updated', updateApiKeyBanner);
 
-  // Full-Page Navigation Switcher (Studio Gambar vs Niche & Prompt)
+const LIVE_TRENDS_STORAGE_KEY = 'adobe_helper_live_trends_v1';
+
+function renderLiveTrends(data) {
+  const emptyEl = document.getElementById('trendsEmptyState');
+  const sumBox = document.getElementById('trendsSummaryBox');
+  const sumText = document.getElementById('trendsMarketSummary');
+  const srcRow = document.getElementById('trendsSourcesRow');
+  const badgeEl = document.getElementById('trendsLastUpdatedBadge');
+  const container = document.getElementById('trendsCardsContainer');
+  if (!container) return;
+
+  const trends = Array.isArray(data?.trends) ? data.trends : [];
+  if (trends.length === 0) {
+    emptyEl?.classList.remove('d-none');
+    sumBox?.classList.add('d-none');
+    badgeEl?.classList.add('d-none');
+    container.innerHTML = '';
+    return;
+  }
+
+  emptyEl?.classList.add('d-none');
+  if (badgeEl && data.fetchedAt) {
+    const dt = new Date(data.fetchedAt);
+    badgeEl.textContent = `Diperbarui: ${dt.toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })}`;
+    badgeEl.classList.remove('d-none');
+  }
+
+  if (sumBox && sumText) {
+    sumText.textContent = data.marketSummary || 'Hasil penelusuran tren microstock terkini dari Google Search.';
+    sumBox.classList.remove('d-none');
+  }
+
+  if (srcRow) {
+    const sources = Array.isArray(data.sources) ? data.sources.filter(s => /^https?:\/\//i.test(s?.uri || '')) : [];
+    if (sources.length > 0) {
+      srcRow.classList.remove('d-none');
+      srcRow.innerHTML = `<span class="text-muted me-1" style="font-size: 0.75rem;">Sumber Google Search:</span>` +
+        sources.map(s => `<a href="${escapeXml(s.uri)}" target="_blank" rel="noopener noreferrer" class="badge bg-light text-primary border text-decoration-none text-truncate" style="max-width: 220px;">${escapeXml(s.title || s.uri)}</a>`).join(' ');
+    } else {
+      srcRow.classList.add('d-none');
+    }
+  }
+
+  container.innerHTML = trends.map(t => {
+    const kwList = (t.keywords || []).slice(0, 10);
+    const kwHtml = kwList.map(k => `<span class="badge bg-white text-muted border fw-normal">${escapeXml(k)}</span>`).join(' ');
+    const promptsHtml = (t.prompts || []).map(p => `
+      <div class="p-2 rounded-2 bg-light border d-flex flex-column gap-1">
+        <div class="d-flex justify-content-between align-items-center gap-2">
+          <span class="badge bg-white text-navy border text-wrap text-start">${escapeXml(p.style || 'Prompt')}</span>
+          <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2 flex-shrink-0" style="font-size: 0.74rem;" data-copy-prompt="${encodeURIComponent(p.prompt || '')}">
+            Salin Prompt
+          </button>
+        </div>
+        <div class="font-monospace text-muted text-break" style="font-size: 0.75rem; line-height: 1.45;">
+          ${escapeXml(p.prompt || '')}
+        </div>
+      </div>
+    `).join('');
+
+    return `
+      <div class="col-12 col-md-6 col-xl-4">
+        <div class="pro-card p-3 h-100 d-flex flex-column justify-content-between gap-2">
+          <div>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+              <div class="d-flex flex-wrap gap-1">
+                <span class="badge bg-light-primary border border-primary-subtle">${escapeXml(t.trendBadge || 'Sedang Naik')}</span>
+                <span class="badge bg-light text-muted border">${escapeXml(t.category || 'Graphic Resources')}</span>
+              </div>
+              <div class="d-flex gap-1">
+                <button type="button" class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.74rem;" data-copy-keywords="${encodeURIComponent(kwList.join(', '))}">
+                  Salin Tag
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 0.74rem;" data-apply-theme="${encodeURIComponent(t.title || '')}">
+                  Pakai Tema
+                </button>
+              </div>
+            </div>
+            <h6 class="fw-bold text-navy mb-1 text-break" style="font-size: 0.95rem;">${escapeXml(t.title || '')}</h6>
+            <p class="text-muted mb-2 text-break" style="font-size: 0.78rem; line-height: 1.45;">
+              ${escapeXml(t.whyHype || '')}
+            </p>
+            <div class="text-muted mb-2 text-break" style="font-size: 0.75rem;">
+              <strong>Target:</strong> ${escapeXml(t.buyerTarget || '')}
+            </div>
+            <div class="d-flex flex-wrap gap-1 mb-2">
+              ${kwHtml}
+            </div>
+            <div class="d-flex flex-column gap-2">
+              ${promptsHtml}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function loadSavedLiveTrends() {
+  try {
+    const raw = localStorage.getItem(LIVE_TRENDS_STORAGE_KEY);
+    if (raw) renderLiveTrends(JSON.parse(raw));
+  } catch {}
+}
+
+  // Full-Page Navigation Switcher (Studio Gambar vs Niche & Prompt vs Tren Real-Time)
   const switchMainPage = targetPage => {
-    const isNiche = targetPage === 'niche';
-    document.getElementById('viewStudio').classList.toggle('d-none', isNiche);
-    document.getElementById('viewNiche').classList.toggle('d-none', !isNiche);
+    document.getElementById('viewStudio').classList.toggle('d-none', targetPage !== 'studio');
+    document.getElementById('viewNiche').classList.toggle('d-none', targetPage !== 'niche');
+    document.getElementById('viewTrends')?.classList.toggle('d-none', targetPage !== 'trends');
     document.querySelectorAll('#mainPageSwitch .nav-page-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.page === targetPage);
     });
-    if (isNiche) {
+    if (targetPage === 'niche') {
       renderNicheCards();
+    } else if (targetPage === 'trends') {
+      loadSavedLiveTrends();
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -1758,6 +1884,92 @@ document.addEventListener('DOMContentLoaded', () => {
       const inputTheme = document.getElementById('inputFocusTheme');
       if (inputTheme) inputTheme.value = theme;
       saveSettingsToStorage();
+      switchMainPage('studio');
+      const metaTabBtn = document.querySelector('[data-bs-target="#tabVision"]');
+      if (metaTabBtn) bootstrap.Tab.getOrCreateInstance(metaTabBtn).show();
+      showToast('Tema Diterapkan', `Tema "${theme}" diterapkan ke pengaturan Metadata AI.`, 'success');
+    }
+  });
+
+  // Live Trends Research Page Events (Gemini + Google Search Grounding)
+  const triggerLiveTrendsFetch = async () => {
+    const savedKeys = (localStorage.getItem('adobe_helper_gemini_keys') || '').trim();
+    if (!savedKeys) {
+      apiKeyModalInstance?.show();
+      showToast('API Key Diperlukan', 'Masukkan API Key Gemini terlebih dahulu untuk menelusuri tren real-time via Google Search.', 'warning');
+      return;
+    }
+
+    const btn = document.getElementById('btnFetchLiveTrends');
+    const emptyBtn = document.getElementById('btnEmptyFetchTrends');
+    const loadingBox = document.getElementById('trendsLoadingBox');
+    const emptyState = document.getElementById('trendsEmptyState');
+
+    if (btn) btn.disabled = true;
+    if (emptyBtn) emptyBtn.disabled = true;
+    loadingBox?.classList.remove('d-none');
+    emptyState?.classList.add('d-none');
+
+    try {
+      const data = await researchLiveMicrostockTrends({
+        category: document.getElementById('selectTrendCategory')?.value,
+        assetType: document.getElementById('selectTrendAssetType')?.value,
+        horizon: document.getElementById('selectTrendHorizon')?.value,
+        topic: document.getElementById('inputTrendTopic')?.value,
+        preferredModel: state.settings.preferredModel
+      });
+      localStorage.setItem(LIVE_TRENDS_STORAGE_KEY, JSON.stringify(data));
+      renderLiveTrends(data);
+      showToast('Tren Ditemukan', `${data.trends.length} topik hype dari Google Search siap dieksplorasi (${data.modelUsed}).`, 'success');
+    } catch (err) {
+      showToast('Gagal Riset Tren', err.message, 'danger');
+      if (localStorage.getItem(LIVE_TRENDS_STORAGE_KEY)) loadSavedLiveTrends();
+      else renderLiveTrends({ trends: [] });
+    } finally {
+      loadingBox?.classList.add('d-none');
+      if (btn) btn.disabled = false;
+      if (emptyBtn) emptyBtn.disabled = false;
+    }
+  };
+
+  document.getElementById('btnFetchLiveTrends')?.addEventListener('click', triggerLiveTrendsFetch);
+  document.getElementById('btnEmptyFetchTrends')?.addEventListener('click', triggerLiveTrendsFetch);
+  document.getElementById('inputTrendTopic')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      triggerLiveTrendsFetch();
+    }
+  });
+
+  document.getElementById('trendsCardsContainer')?.addEventListener('click', e => {
+    const copyPromptBtn = e.target.closest('[data-copy-prompt]');
+    if (copyPromptBtn) {
+      const promptText = decodeURIComponent(copyPromptBtn.dataset.copyPrompt);
+      navigator.clipboard.writeText(promptText);
+      const prev = copyPromptBtn.textContent;
+      copyPromptBtn.textContent = 'Tersalin!';
+      setTimeout(() => { copyPromptBtn.textContent = prev; }, 1500);
+      showToast('Prompt Disalin', 'Silakan tempel (paste) ke Google Flow / ImageFX.', 'success');
+      return;
+    }
+
+    const copyKwBtn = e.target.closest('[data-copy-keywords]');
+    if (copyKwBtn) {
+      const kwsText = decodeURIComponent(copyKwBtn.dataset.copyKeywords);
+      navigator.clipboard.writeText(kwsText);
+      const prev = copyKwBtn.textContent;
+      copyKwBtn.textContent = 'Tersalin!';
+      setTimeout(() => { copyKwBtn.textContent = prev; }, 1500);
+      showToast('Keywords Disalin', '10 keyword tren telah disalin ke clipboard.', 'success');
+      return;
+    }
+
+    const applyBtn = e.target.closest('[data-apply-theme]');
+    if (applyBtn) {
+      const theme = decodeURIComponent(applyBtn.dataset.applyTheme);
+      state.settings.focusTheme = theme;
+      const inputTheme = document.getElementById('inputFocusTheme');
+      if (inputTheme) inputTheme.value = theme;
       switchMainPage('studio');
       const metaTabBtn = document.querySelector('[data-bs-target="#tabVision"]');
       if (metaTabBtn) bootstrap.Tab.getOrCreateInstance(metaTabBtn).show();
@@ -1936,6 +2148,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('selectJpegQuality').addEventListener('change', e => {
     state.settings.jpegQuality = parseInt(e.target.value, 10);
+    saveSettingsToStorage();
+  });
+
+  document.getElementById('selectVectorMode')?.addEventListener('change', e => {
+    state.settings.vectorMode = e.target.value;
+    saveSettingsToStorage();
+  });
+
+  document.getElementById('selectVectorQuality')?.addEventListener('change', e => {
+    state.settings.vectorQuality = e.target.value;
+    saveSettingsToStorage();
+  });
+
+  document.getElementById('checkVectorRemoveWhite')?.addEventListener('change', e => {
+    state.settings.vectorRemoveWhite = e.target.checked;
     saveSettingsToStorage();
   });
 

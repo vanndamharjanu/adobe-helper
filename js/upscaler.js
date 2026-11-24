@@ -534,6 +534,267 @@ function colorDistPct(r, g, b, bg) {
 }
 
 /**
+ * Finds the dominant background color along all 4 image edges via 4-bit color histogram
+ */
+function detectDominantBorderColor(data, w, h) {
+  const bins = new Map();
+  const samplePixel = (x, y) => {
+    const idx = (y * w + x) * 4;
+    if (data[idx + 3] < 128) return;
+    const key = ((data[idx] >> 4) << 8) | ((data[idx + 1] >> 4) << 4) | (data[idx + 2] >> 4);
+    let bin = bins.get(key);
+    if (!bin) {
+      bin = [0, 0, 0, 0];
+      bins.set(key, bin);
+    }
+    bin[0] += data[idx];
+    bin[1] += data[idx + 1];
+    bin[2] += data[idx + 2];
+    bin[3]++;
+  };
+
+  for (let x = 0; x < w; x++) {
+    samplePixel(x, 0);
+    if (h > 1) samplePixel(x, h - 1);
+  }
+  for (let y = 1; y < h - 1; y++) {
+    samplePixel(0, y);
+    if (w > 1) samplePixel(w - 1, y);
+  }
+
+  if (bins.size === 0) return [255, 255, 255];
+  let best = null;
+  for (const bin of bins.values()) {
+    if (!best || bin[3] > best[3]) best = bin;
+  }
+  return [
+    Math.round(best[0] / best[3]),
+    Math.round(best[1] / best[3]),
+    Math.round(best[2] / best[3])
+  ];
+}
+
+/**
+ * Clears newly removed pixels and decontaminates anti-aliased boundary pixels
+ * without leaking transparency into solid interior colors.
+ */
+function applyBoundaryMatte(data, orig, newlyRemoved, fullMask, w, h, bg, tolerance, fillWhite) {
+  const total = w * h;
+
+  for (let p = 0; p < total; p++) {
+    if (!newlyRemoved[p]) continue;
+    const idx = p * 4;
+    if (fillWhite) {
+      data[idx] = 255;
+      data[idx + 1] = 255;
+      data[idx + 2] = 255;
+      data[idx + 3] = 255;
+    } else {
+      data[idx] = 0;
+      data[idx + 1] = 0;
+      data[idx + 2] = 0;
+      data[idx + 3] = 0;
+    }
+  }
+
+  const band = [];
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const p = row + x;
+      if (fullMask[p] || orig[p * 4 + 3] < 128) continue;
+
+      let immediate = false;
+      let near = false;
+      for (let dy = -2; dy <= 2 && !immediate; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        const nRow = ny * w;
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w) continue;
+          if (newlyRemoved[nRow + nx]) {
+            near = true;
+            if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
+              immediate = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!near) continue;
+      if (immediate || colorDistPct(orig[p * 4], orig[p * 4 + 1], orig[p * 4 + 2], bg) <= tolerance * 1.4) {
+        band.push(p, immediate ? 1 : 0);
+      }
+    }
+  }
+
+  const updates = [];
+  for (let bIdx = 0; bIdx < band.length; bIdx += 2) {
+    const p = band[bIdx];
+    const isImmediate = band[bIdx + 1] === 1;
+    const x = p % w;
+    const y = (p - x) / w;
+    const i = p * 4;
+
+    const findBestFg = (radius) => {
+      let bestScore = -1;
+      let bestQ = -1;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        const nRow = ny * w;
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w) continue;
+          const q = nRow + nx;
+          if (fullMask[q] || orig[q * 4 + 3] < 128) continue;
+          const qi = q * 4;
+          const dist = colorDistRgb(orig[qi], orig[qi + 1], orig[qi + 2], bg[0], bg[1], bg[2]);
+          if (dist < 42) continue;
+          const score = dist - (dx * dx + dy * dy) * 2;
+          if (score > bestScore) {
+            bestScore = score;
+            bestQ = q;
+          }
+        }
+      }
+      return bestQ;
+    };
+
+    let f = findBestFg(2);
+    if (f < 0) f = findBestFg(4);
+
+    if (f >= 0) {
+      const j = f * 4;
+      const vx = orig[j] - bg[0];
+      const vy = orig[j + 1] - bg[1];
+      const vz = orig[j + 2] - bg[2];
+      const vLenSq = vx * vx + vy * vy + vz * vz;
+      const cx = orig[i] - bg[0];
+      const cy = orig[i + 1] - bg[1];
+      const cz = orig[i + 2] - bg[2];
+      const a = Math.max(0, Math.min(1, (cx * vx + cy * vy + cz * vz) / vLenSq));
+
+      const rx = cx - a * vx;
+      const ry = cy - a * vy;
+      const rz = cz - a * vz;
+      const perpDist = Math.sqrt(rx * rx + ry * ry + rz * rz);
+
+      if (perpDist <= 42 && a < 0.98) {
+        if (fillWhite) {
+          updates.push(
+            i,
+            Math.round(orig[j] * a + 255 * (1 - a)),
+            Math.round(orig[j + 1] * a + 255 * (1 - a)),
+            Math.round(orig[j + 2] * a + 255 * (1 - a)),
+            255
+          );
+        } else if (a < 0.04) {
+          updates.push(i, 0, 0, 0, 0);
+        } else {
+          updates.push(i, orig[j], orig[j + 1], orig[j + 2], Math.round(a * orig[i + 3]));
+        }
+      }
+    } else if (isImmediate) {
+      const distPct = colorDistPct(orig[i], orig[i + 1], orig[i + 2], bg);
+      if (distPct <= tolerance * 1.2) {
+        const a = Math.max(0, Math.min(1, distPct / (tolerance * 1.2)));
+        if (fillWhite) {
+          updates.push(
+            i,
+            Math.round(orig[i] * a + 255 * (1 - a)),
+            Math.round(orig[i + 1] * a + 255 * (1 - a)),
+            Math.round(orig[i + 2] * a + 255 * (1 - a)),
+            255
+          );
+        } else {
+          updates.push(i, orig[i], orig[i + 1], orig[i + 2], Math.round(a * orig[i + 3]));
+        }
+      }
+    }
+  }
+
+  for (let u = 0; u < updates.length; u += 5) {
+    const i = updates[u];
+    data[i] = updates[u + 1];
+    data[i + 1] = updates[u + 2];
+    data[i + 2] = updates[u + 3];
+    data[i + 3] = updates[u + 4];
+  }
+}
+
+function autoCenterCutoutCanvas(srcCanvas, fillWhite, paddingRatio = 0.08) {
+  const w = srcCanvas.width;
+  const h = srcCanvas.height;
+  const ctx = srcCanvas.getContext('2d', { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, w, h).data;
+
+  let minX = w, minY = h, maxX = -1, maxY = -1, fgCount = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      const isFg = fillWhite
+        ? (data[idx] < 245 || data[idx + 1] < 245 || data[idx + 2] < 245)
+        : (data[idx + 3] >= 24);
+      if (isFg) {
+        fgCount++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (fgCount < 64 || maxX <= minX || maxY <= minY) return srcCanvas;
+
+  const objW = maxX - minX + 1;
+  const objH = maxY - minY + 1;
+  const maxContentW = Math.max(1, Math.round(w * (1 - paddingRatio * 2)));
+  const maxContentH = Math.max(1, Math.round(h * (1 - paddingRatio * 2)));
+  const fitScale = Math.min(1, maxContentW / objW, maxContentH / objH);
+  const drawW = Math.max(1, Math.round(objW * fitScale));
+  const drawH = Math.max(1, Math.round(objH * fitScale));
+  const dstX = Math.round((w - drawW) / 2);
+  const dstY = Math.round((h - drawH) / 2);
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = w;
+  outCanvas.height = h;
+  const outCtx = outCanvas.getContext('2d');
+  if (fillWhite) {
+    outCtx.fillStyle = '#FFFFFF';
+    outCtx.fillRect(0, 0, w, h);
+  }
+  outCtx.imageSmoothingEnabled = true;
+  outCtx.imageSmoothingQuality = 'high';
+  outCtx.drawImage(srcCanvas, minX, minY, objW, objH, dstX, dstY, drawW, drawH);
+  return outCanvas;
+}
+
+function renderCanvasToCutoutResult(canvas, fillWhite) {
+  const mime = fillWhite ? 'image/jpeg' : 'image/png';
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      blob => {
+        if (!blob) return reject(new Error('Gagal mengekspor gambar hasil isolasi.'));
+        resolve({
+          changed: true,
+          blob,
+          url: URL.createObjectURL(blob),
+          width: canvas.width,
+          height: canvas.height,
+          isTransparent: !fillWhite
+        });
+      },
+      mime,
+      fillWhite ? 0.96 : undefined
+    );
+  });
+}
+
+/**
  * Smart Background Removal (Border Histogram + Flood Fill + Optional Internal Holes + Edge Matting)
  */
 export async function isolateSubjectBackground(sourceUrl, options = {}) {

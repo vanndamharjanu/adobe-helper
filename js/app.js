@@ -23,6 +23,12 @@ import {
   MONTH_NAMES_ID,
   getNichesByHorizon
 } from './niche-prompts.js?v=20261121_01';
+import {
+  isExtensionContext,
+  findAdobeContributorTab,
+  sendMessageToAdobeTab,
+  blobToBase64
+} from './adobe-bridge.js?v=20261122_01';
 
 // IndexedDB Queue Persistence (so page refresh does not lose images/metadata)
 const DB_NAME = 'microstock_adobe_helper_db';
@@ -2290,6 +2296,225 @@ function loadSavedLiveTrends() {
       refreshStatsAndGrid();
     }
   });
+
+  document.getElementById('btnClearQueueDesktop')?.addEventListener('click', () => {
+    document.getElementById('btnClearQueue')?.click();
+  });
+
+  // Chrome Extension Adobe Stock Auto-Upload Bridge
+  if (isExtensionContext()) {
+    const extPanel = document.getElementById('extAdobePanel');
+    const extStatusBadge = document.getElementById('extAdobeStatusBadge');
+    const modalExtFillBtn = document.getElementById('btnModalExtFill');
+    extPanel?.classList.remove('d-none');
+    modalExtFillBtn?.classList.remove('d-none');
+
+    const refreshExtStatus = async () => {
+      if (!extStatusBadge) return;
+      try {
+        const tab = await findAdobeContributorTab(false);
+        if (!tab) {
+          extStatusBadge.className = 'badge bg-light-warning border';
+          extStatusBadge.textContent = 'Portal Adobe Stock belum dibuka';
+          return;
+        }
+        const ping = await sendMessageToAdobeTab(tab.id, { type: 'PING' }).catch(() => null);
+        if (ping?.ok) {
+          extStatusBadge.className = 'badge bg-light-success border';
+          extStatusBadge.textContent = ping.hasFileInput
+            ? 'Terhubung: Siap Upload File'
+            : ping.hasMetadataForm
+              ? 'Terhubung: Form Metadata Aktif'
+              : 'Terhubung ke Portal Adobe Stock';
+        } else {
+          extStatusBadge.className = 'badge bg-light text-navy border';
+          extStatusBadge.textContent = 'Tab Adobe Stock ditemukan';
+        }
+      } catch {
+        extStatusBadge.className = 'badge bg-light text-muted border';
+        extStatusBadge.textContent = 'Portal Adobe Stock';
+      }
+    };
+
+    refreshExtStatus();
+    chrome.tabs?.onActivated?.addListener(refreshExtStatus);
+    chrome.tabs?.onUpdated?.addListener((_id, info) => {
+      if (info.status === 'complete' || info.url) refreshExtStatus();
+    });
+
+    const resolveTargetType = (item, mode) => {
+      if (mode === 'auto') {
+        if (item.isVectorized && item.svgBlob) return 'svg';
+        return 'raster';
+      }
+      return mode;
+    };
+
+    const buildMetaPayload = (item, formatMode) => {
+      const targetType = resolveTargetType(item, formatMode);
+      const exportFilename = getExportFilename(item, targetType);
+      const baseName = (item.name || 'image').replace(/\.[^/.]+$/, '');
+      const meta = item.metadata || {};
+      return {
+        exportFilename,
+        originalName: item.name,
+        baseName,
+        title: meta.title || '',
+        keywords: Array.isArray(meta.keywords) ? meta.keywords.slice(0, 49) : [],
+        category: meta.category || 'Graphic Resources',
+        isAiGenerated: meta.isAiGenerated !== false,
+        fictionalPeople: Boolean(meta.fictionalPeople)
+      };
+    };
+
+    document.getElementById('btnExtOpenAdobe')?.addEventListener('click', async () => {
+      const tab = await findAdobeContributorTab(true);
+      if (tab?.id != null) {
+        await chrome.tabs.update(tab.id, { active: true });
+        if (tab.windowId != null) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      }
+      setTimeout(refreshExtStatus, 600);
+    });
+
+    document.getElementById('btnExtPushFiles')?.addEventListener('click', async () => {
+      if (state.items.length === 0) {
+        showToast('Antrean Kosong', 'Tambahkan dan proses gambar terlebih dahulu.', 'warning');
+        return;
+      }
+      const btn = document.getElementById('btnExtPushFiles');
+      const formatMode = document.getElementById('selectExtUploadType')?.value || 'raster';
+      btn.disabled = true;
+      try {
+        const filesPayload = [];
+        for (const item of state.items) {
+          const targetType = resolveTargetType(item, formatMode);
+          let blob = null;
+          let mimeType = 'image/jpeg';
+          if (targetType === 'svg') {
+            blob = item.svgBlob || (item.svgString ? new Blob([item.svgString], { type: 'image/svg+xml' }) : null);
+            mimeType = 'image/svg+xml';
+          } else if (targetType === 'eps') {
+            blob = item.epsBlob || (item.epsString ? new Blob([item.epsString], { type: 'application/postscript' }) : null);
+            mimeType = 'application/postscript';
+          } else {
+            blob = item.upscaledBlob || item.isolatedBlob || item.file;
+            if (blob && item.metadata?.title) {
+              blob = await embedMetadataIntoBlob(blob, item.metadata);
+            }
+            mimeType = blob?.type || 'image/jpeg';
+          }
+          if (!blob) continue;
+          const filename = getExportFilename(item, targetType);
+          const base64 = await blobToBase64(blob);
+          filesPayload.push({ name: filename, mimeType, base64 });
+        }
+
+        if (filesPayload.length === 0) {
+          showToast('File Belum Siap', 'Tidak ada file yang sesuai format pilihan (pastikan sudah Upscale / Vectorize).', 'warning');
+          return;
+        }
+
+        const tab = await findAdobeContributorTab(true);
+        await chrome.tabs.update(tab.id, { active: true });
+
+        // Chunk payloads <= 18MB base64 per IPC message so large batches stay well below Chrome's 64MB limit
+        const MAX_CHUNK_CHARS = 18 * 1024 * 1024;
+        let sentCount = 0;
+        let lastMethod = 'file-input';
+        let batch = [];
+        let batchChars = 0;
+
+        const flushBatch = async () => {
+          if (batch.length === 0) return;
+          const resp = await sendMessageToAdobeTab(tab.id, { type: 'INJECT_FILES', files: batch });
+          if (!resp?.ok) {
+            throw new Error(resp?.error || 'Pastikan halaman Upload Adobe Stock sudah terbuka.');
+          }
+          sentCount += resp.count || batch.length;
+          lastMethod = resp.method || lastMethod;
+          batch = [];
+          batchChars = 0;
+        };
+
+        for (const f of filesPayload) {
+          if (batch.length > 0 && batchChars + f.base64.length > MAX_CHUNK_CHARS) {
+            await flushBatch();
+          }
+          batch.push(f);
+          batchChars += f.base64.length;
+        }
+        await flushBatch();
+
+        showToast('File Terkirim ke Adobe Stock', `${sentCount} file berhasil dimasukkan ke upload queue Adobe Stock (${lastMethod}).`, 'success');
+      } catch (err) {
+        showToast('Error Extension', err.message, 'danger');
+      } finally {
+        btn.disabled = false;
+        refreshExtStatus();
+      }
+    });
+
+    document.getElementById('btnExtFillMeta')?.addEventListener('click', async () => {
+      const formatMode = document.getElementById('selectExtUploadType')?.value || 'raster';
+      const itemsWithMeta = state.items.filter(it => it.metadata && (it.metadata.title || it.metadata.keywords?.length));
+      if (itemsWithMeta.length === 0) {
+        showToast('Metadata Kosong', 'Generate Metadata AI terlebih dahulu sebelum mengisi form Adobe Stock.', 'warning');
+        return;
+      }
+      const btn = document.getElementById('btnExtFillMeta');
+      btn.disabled = true;
+      try {
+        const tab = await findAdobeContributorTab(false);
+        if (!tab) {
+          showToast('Portal Belum Terbuka', 'Buka tab contributor.stock.adobe.com dan pilih file yang diupload.', 'warning');
+          return;
+        }
+        const payload = itemsWithMeta.map(it => buildMetaPayload(it, formatMode));
+        const resp = await sendMessageToAdobeTab(tab.id, {
+          type: 'AUTO_FILL_METADATA',
+          mode: 'batch',
+          items: payload
+        });
+        if (resp?.ok) {
+          showToast('Metadata & AI Terisi', resp.note || `${resp.filledCount} aset berhasil diisi di Adobe Stock. Silakan review & klik Submit.`, 'success');
+        } else {
+          showToast('Gagal Mengisi Form', resp?.error || 'Pastikan halaman Upload Adobe Stock menampilkan aset & form metadata.', 'danger');
+        }
+      } catch (err) {
+        showToast('Error Extension', err.message, 'danger');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    modalExtFillBtn?.addEventListener('click', async () => {
+      const item = syncActiveModalMetadata();
+      if (!item || !item.metadata?.title) {
+        showToast('Metadata Belum Ada', 'Buat atau isi Title & Keywords terlebih dahulu.', 'warning');
+        return;
+      }
+      try {
+        const tab = await findAdobeContributorTab(false);
+        if (!tab) {
+          showToast('Portal Belum Terbuka', 'Buka tab contributor.stock.adobe.com dan pilih aset yang ingin diisi.', 'warning');
+          return;
+        }
+        const formatMode = document.getElementById('selectExtUploadType')?.value || 'raster';
+        const resp = await sendMessageToAdobeTab(tab.id, {
+          type: 'AUTO_FILL_METADATA',
+          mode: 'active',
+          items: [buildMetaPayload(item, formatMode)]
+        });
+        if (resp?.ok) {
+          showToast('Form Adobe Stock Terisi', `Metadata & centang AI untuk "${item.name}" telah diisikan.`, 'success');
+        } else {
+          showToast('Gagal Mengisi Form', resp?.error || 'Pastikan 1 aset sedang dipilih di Adobe Stock.', 'danger');
+        }
+      } catch (err) {
+        showToast('Error Extension', err.message, 'danger');
+      }
+    });
+  }
 
   // Filter & Search
   document.getElementById('filterPillsGroup').addEventListener('click', e => {

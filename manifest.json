@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Microstock Adobe Helper Pro",
+  "version": "1.0.0",
+  "description": "Upscaler Lanczos-3, Vectorizer SVG/EPS, Metadata Gemini AI, Riset Tren & Automation Upload ke Adobe Stock Contributor.",
+  "icons": {
+    "16": "extension/icons/icon16.png",
+    "48": "extension/icons/icon48.png",
+    "128": "extension/icons/icon128.png"
+  },
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://contributor.stock.adobe.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "extension/background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "action": {
+    "default_title": "Buka Microstock Adobe Helper Pro",
+    "default_icon": {
+      "16": "extension/icons/icon16.png",
+      "48": "extension/icons/icon48.png",
+      "128": "extension/icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://contributor.stock.adobe.com/*"],
+      "js": ["extension/content-adobe.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
